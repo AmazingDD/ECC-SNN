@@ -23,6 +23,8 @@ model_conf = {
     'svgg9': SpikeVGG9
 }
 
+logger = Logger(name="prepare.py", log_file="prepare.log", level=logging.INFO).get_logger()
+
 parser = argparse.ArgumentParser(description='Setup stage for ECC-SNN')
 parser.add_argument('-j',
                     '--workers',
@@ -88,12 +90,6 @@ parser.add_argument('-base',
                     type=int, 
                     required=False,
                     help='Number of classes of the first task')
-parser.add_argument('-stop', 
-                    '--stop-at-task', 
-                    default=0, 
-                    type=int, 
-                    required=False,
-                    help='Stop training after specified task')
 parser.add_argument('-nt', 
                     '--num-tasks', 
                     default=5, 
@@ -334,8 +330,6 @@ for tt in range(num_tasks):
                                 shuffle=False, 
                                 num_workers=args.workers, 
                                 pin_memory=True))
-    
-# max_task = len(taskcla) if args.stop_at_task == 0 else args.stop_at_task
 
 init_model = model_conf[args.edge](num_classes, C, H, W)
 init_model.T = args.T
@@ -403,7 +397,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                     total_acc += acc.sum().item()
                 test_loss, test_acc = total_loss / total, total_acc / total
             clock4 = time.time()
-            print(f' test time={clock4 - clock3:5.2f}s loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
+            print(f' test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
 
             if test_acc >= best_acc:
                 best_acc = test_acc
@@ -496,7 +490,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                     total_acc += acc.sum().item()
                 test_loss, test_acc = total_loss / total, total_acc / total
             clock4 = time.time()
-            print(f' test time={clock4 - clock3:5.2f}s loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
+            print(f' test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
 
             if test_acc >= best_acc:
                 best_acc = test_acc
@@ -514,10 +508,6 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         # save base edge model
         torch.save(net.get_copy(), f'saved/best_edge_base_{args.edge}_{args.dataset}.pt')
 
-    # post process for lwf, preparing for the next task
-    # net_old = deepcopy(net)
-    # net_old.eval()
-    # net_old.freeze_all()
 print(f'Finished preparing edge SNN model with best test accuracy {100 * best_acc:5.2f}%...')
 
 torch.save(trn_load, f'saved/train_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')

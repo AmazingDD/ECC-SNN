@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
-from torch.utils.data import DataLoader
 
 from utils import *
 from models.base import NetHead
@@ -18,6 +17,25 @@ model_conf = {
     'vgg16': VGG16,
     'svgg9': SpikeVGG9
 }
+
+def cross_entropy(outputs, targets, exp=1.0, size_average=True, eps=1e-5):
+        """Calculates cross-entropy with temperature scaling"""
+        out = torch.nn.functional.softmax(outputs, dim=1)
+        tar = torch.nn.functional.softmax(targets, dim=1)
+        if exp != 1:
+            out = out.pow(exp)
+            out = out / out.sum(1).view(-1, 1).expand_as(out)
+            tar = tar.pow(exp)
+            tar = tar / tar.sum(1).view(-1, 1).expand_as(tar)
+        out = out + eps / out.size(1)
+        out = out / out.sum(1).view(-1, 1).expand_as(out)
+        ce = -(tar * out.log()).sum(1)
+        if size_average:
+            ce = ce.mean()
+        return ce
+
+tstart = time.time()
+logger = Logger(name="update.py", log_file="update.log", level=logging.INFO).get_logger()
 
 parser = argparse.ArgumentParser(description='Simulate update stage for ECC-SNN')
 parser.add_argument('-ee',
@@ -83,18 +101,178 @@ parser.add_argument('-fix-bn',
                     '--fix-bn', 
                     action='store_true',
                     help='Fix batch normalization after first task')
-parser.add_argument('-distill', 
-                    action='store_true', 
-                    help='train edge with distillation or directly')
-
-
+parser.add_argument('-lamb', 
+                    default=1., 
+                    type=float, 
+                    help='regularization for L_old')
+parser.add_argument('-temperature', 
+                    default=2.0, 
+                    type=float, 
+                    help='distillation temperature')
 args = parser.parse_args()
 print(args)
 seed_all(args.seed)
+device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
 
 trn_load = torch.load(f'saved/train_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 tst_load = torch.load(f'saved/test_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 taskcla = torch.load(f'saved/taskcla_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
+class_order = torch.load(f'saved/classorder_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 
+max_task = len(taskcla) if args.stop_at_task == 0 else args.stop_at_task
 
-# TODO
+# two matrix for final results
+acc_taw = np.zeros((max_task, max_task))
+forg_taw = np.zeros((max_task, max_task))
+
+if args.dataset == 'cifar100':
+    num_classes = 100
+    C, H, W = 3, 32, 32
+elif args.dataset == 'cifar10':
+    num_classes = 10
+    C, H, W = 3, 32, 32
+elif 'imagenet' in args.dataset:
+    pass
+else:
+    raise NotImplementedError(f'Invalid dataset name: {args.dataset}')
+
+# load base edge SNN
+init_model = model_conf[args.edge](num_classes, C, H, W)
+init_model.T = args.T
+seed_all(args.seed)
+net = NetHead(init_model)
+seed_all(args.seed)
+
+# add base task head
+net.add_head(taskcla[0][1]) 
+net.set_state_dict(torch.load(f'saved/best_edge_base_{args.edge}_{args.dataset}.pt', map_location='cpu'))
+net.to(device)
+
+# post process for lwf, preparing for the next task, start from task 1
+net_old = deepcopy(net)
+net_old.eval()
+net_old.freeze_all()
+
+for t, (_, ncla) in enumerate(taskcla): # task 0->n
+    if t >= max_task:
+        continue
+
+    print('*' * 108)
+    print(f'Task {t:2d}')
+    print('*' * 108)
+
+    if t > 0:
+
+        net.add_head(taskcla[t][1]) 
+        net.to(device)
+
+        optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=5e-4)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
+        criterion = nn.CrossEntropyLoss()
+
+        best_acc = -np.inf
+        patience = args.lr_patience
+        best_model = net.get_copy()
+        for e in range(args.edge_epochs):
+            clock0 = time.time()
+            net.train()
+            if args.fix_bn and t > 0:
+                net.freeze_bn()
+            for images, targets in trn_load[t]:
+                outputs_old = None
+                if t > 0:
+                    outputs_old, _ = net_old(images.to(device))
+
+                outputs, _ = net(images.to(device))
+
+                # L_new
+                loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
+                if t > 0:
+                    # L_old
+                    loss += args.lamb * cross_entropy(
+                        torch.cat(outputs[:t], dim=1), 
+                        torch.cat(outputs_old[:t], dim=1), exp=1.0 / args.temperature)
+                    
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(net.parameters(), 10000)
+                optimizer.step()
+
+            scheduler.step()
+            clock1 = time.time()
+            print(f'| Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s |', end='')
+
+            clock3 = time.time()
+            with torch.no_grad():
+                total_loss, total_acc, total = 0, 0, 0
+                net.eval()
+                for images, targets in tst_load[t]:
+                    outputs, _ = net(images.to(device))
+                    loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
+                    # calculate batch accuracy 
+                    pred = torch.zeros_like(targets.to(device))
+                    for m in range(len(pred)):
+                        this_task = (net.task_cls.cumsum(0) <= targets[m]).sum()
+                        pred[m] = outputs[this_task][m].argmax() + net.task_offset[this_task]
+                    acc = (pred == targets.to(device)).float()
+
+                    total_loss += loss.item() * len(targets)
+                    total += len(targets)
+                    total_acc += acc.sum().item()
+                test_loss, test_acc = total_loss / total, total_acc / total
+            clock4 = time.time()
+            print(f' test time={clock4 - clock3:5.2f}s loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
+
+            if test_acc >= best_acc:
+                best_acc = test_acc
+                best_model = net.get_copy()
+                patience = args.lr_patience
+                print(' *', end='')
+            else:
+                patience -= 1
+                if patience <= 0:
+                    net.set_state_dict(best_model)
+                    print()
+                    break
+            print()
+        net.set_state_dict(best_model)
+
+        net_old = deepcopy(net)
+        net_old.eval()
+        net_old.freeze_all()
+
+    else:
+        print('already finish task 0 at prepare.py...')
+    
+    print('-' * 108)
+
+    # CIL Test 
+    res_out=''
+    for u in range(t + 1):
+        with torch.no_grad():
+            total_acc_taw, total_taw = 0, 0
+            net.eval()
+            for images, targets in tst_load[u]:
+                outputs, _ = net(images.to(device))
+                pred = torch.zeros_like(targets.to(device))
+                for m in range(len(pred)):
+                    this_task = (net.task_cls.cumsum(0) <= targets[m]).sum()
+                    pred[m] = outputs[this_task][m].argmax() + net.task_offset[this_task]
+                acc = (pred == targets.to(device)).float()
+                total_taw += len(targets)
+                total_acc_taw += acc.sum().item()
+            test_acc_taw = total_acc_taw / total_taw
+        
+        acc_taw[t, u] = test_acc_taw
+        if u < t:
+            forg_taw[t, u] = acc_taw[:t, u].max(0) - acc_taw[t, u]
+        res_tmp = f'>>> Test on task {u:2d} | TAw acc={100 * acc_taw[t, u]:5.1f}%, forg={100 * forg_taw[t, u]:5.1f}%'
+        print(res_tmp)
+        res_out += res_tmp + '\n'
+
+    # save
+    torch.save(net.state_dict(), f'saved/best_edge_task{t}_{args.edge}_{args.dataset}.pt')
+
+print_summary(acc_taw, forg_taw)
+print('[Elapsed time = {:.1f} h]'.format((time.time() - tstart) / (60 * 60)))
+print('Done!')
