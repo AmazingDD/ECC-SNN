@@ -16,7 +16,7 @@ class Logger:
         self._add_console_handler(level)
 
     def _add_file_handler(self, log_file: str, level: int):
-        file_handler = logging.FileHandler(log_file, mode="a")
+        file_handler = logging.FileHandler(f'logs/{log_file}', mode="w")
         file_handler.setLevel(level)
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
