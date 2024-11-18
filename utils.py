@@ -9,14 +9,14 @@ from torch.utils.data import Dataset
 
 class Logger:
     def __init__(self, name: str, log_file: str = "app.log", level: int = logging.INFO):
-        ensure_dir(f'logs/{log_file}')
+        ensure_dir(f'./logs')
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
-        self._add_file_handler(log_file, level)
+        self._add_file_handler(f'./logs/{log_file}', level)
         self._add_console_handler(level)
 
     def _add_file_handler(self, log_file: str, level: int):
-        file_handler = logging.FileHandler(f'logs/{log_file}', mode="w")
+        file_handler = logging.FileHandler(log_file, mode="w")
         file_handler.setLevel(level)
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -34,7 +34,6 @@ class Logger:
     def get_logger(self):
         return self.logger
     
-
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
