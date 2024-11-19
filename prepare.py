@@ -117,7 +117,7 @@ parser.add_argument('-temperature',
                     default=3.0, 
                     help='Temperature for logit distillation')
 args = parser.parse_args()
-print(args)
+logger.info(args)
 seed_all(args.seed)
 
 # ensure path to save model
@@ -169,7 +169,7 @@ else:
 ############################################################################################
 ############### Preparing Cloud ANN model with all dataset to make it Oracle ###############
 ############################################################################################
-print('Training cloud ANN')
+logger.info('Training cloud ANN')
 
 trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
 testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
@@ -197,7 +197,7 @@ for epoch in range(args.cloud_epochs):
         running_loss += loss.item()
 
     scheduler.step()
-    print(f'Epoch [{epoch + 1}/ {args.cloud_epochs}], Loss: {running_loss / len(trainloader)}')
+    logger.info(f'Epoch [{epoch + 1}/ {args.cloud_epochs}], Loss: {running_loss / len(trainloader)}')
 
     model.eval()
     correct, total = 0, 0
@@ -211,13 +211,13 @@ for epoch in range(args.cloud_epochs):
             correct += (predicted == labels).sum().item()
 
     acc = 100 * correct / total
-    print(f'Test Accuracy on {args.dataset} for cloud {args.cloud}: {acc:.2f}%')
+    logger.info(f'Test Accuracy on {args.dataset} for cloud {args.cloud}: {acc:.2f}%')
 
     if acc > best_acc:
         best_acc = acc
         torch.save(deepcopy(model.state_dict()), f'saved/best_cloud_{args.cloud}_{args.dataset}.pt')
 
-print(f'Finished preparing cloud model with best test accuracy {best_acc}%...')
+logger.info(f'Finished preparing cloud model with best test accuracy {best_acc}%...')
 
 #########################################################################################
 ####################### prepare incremental scenario for edge SNN #######################
@@ -345,14 +345,14 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         break # we only consider the task 0 for the base model
 
     print('*' * 108)
-    print(f'Task {t:2d}')
+    logger.info(f'Task {t:2d}')
     print('*' * 108)
 
     net.add_head(taskcla[t][1]) 
     net.to(device)
 
     if not args.distill:
-        print('Directly training edge SNN')
+        logger.info('Directly training edge SNN')
 
         optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
@@ -376,7 +376,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 optimizer.step()
             scheduler.step()
             clock1 = time.time()
-            print(f'| Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s |', end='')
+
+            line = f'Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s, '
 
             clock3 = time.time()
             with torch.no_grad():
@@ -397,19 +398,20 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                     total_acc += acc.sum().item()
                 test_loss, test_acc = total_loss / total, total_acc / total
             clock4 = time.time()
-            print(f' test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
+            line += f'test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}%'
 
             if test_acc >= best_acc:
                 best_acc = test_acc
                 best_model = net.get_copy()
                 patience = args.lr_patience
-                print(' *', end='')
+                line += ' *'
             else:
                 patience -= 1
                 if patience <= 0:
                     net.set_state_dict(best_model)
+                    logger.info(line)
                     break
-            print()
+            logger.info(line)
 
         net.set_state_dict(best_model)
 
@@ -417,7 +419,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         torch.save(net.get_copy(), f'saved/best_edge_base_{args.edge}_{args.dataset}.pt')
 
     else:
-        print('Training edge SNN assisted by cloud ANN distillation')
+        logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
         init_model = model_conf[args.cloud](num_classes, C, H, W)
         init_model.load_state_dict(
@@ -429,7 +431,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         c_net.to(device)
         # this only freeze the cloud model weight, but the classifier_head can update
         c_net.freeze_backbone() 
-        print('cloud model loaded successfully...')
+        logger.info('cloud model loaded successfully...')
 
         optimizer = optim.Adam(list(net.parameters()) + list(c_net.heads.parameters()), lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
@@ -469,7 +471,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 optimizer.step()
             scheduler.step()
             clock1 = time.time()
-            print(f'| Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s |', end='')
+            line = f'Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s, '
 
             clock3 = time.time()
             with torch.no_grad():
@@ -490,25 +492,26 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                     total_acc += acc.sum().item()
                 test_loss, test_acc = total_loss / total, total_acc / total
             clock4 = time.time()
-            print(f' test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
+            line += f'test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}%'
 
             if test_acc >= best_acc:
                 best_acc = test_acc
                 best_model = net.get_copy()
                 patience = args.lr_patience
-                print(' *', end='')
+                line +=' *'
             else:
                 patience -= 1
                 if patience <= 0:
                     net.set_state_dict(best_model)
+                    logger.info(line)
                     break
-            print()
+            logger.info(line)
         net.set_state_dict(best_model)
 
         # save base edge model
         torch.save(net.get_copy(), f'saved/best_edge_base_{args.edge}_{args.dataset}.pt')
 
-print(f'Finished preparing edge SNN model with best test accuracy {100 * best_acc:5.2f}%...')
+logger.info(f'Finished preparing edge SNN model with best test accuracy {100 * best_acc:5.2f}%...')
 
 torch.save(trn_load, f'saved/train_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 torch.save(tst_load, f'saved/test_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')

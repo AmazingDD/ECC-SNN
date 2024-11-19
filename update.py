@@ -18,21 +18,13 @@ model_conf = {
     'svgg9': SpikeVGG9
 }
 
-def cross_entropy(outputs, targets, exp=1.0, size_average=True, eps=1e-5):
-        """Calculates cross-entropy with temperature scaling"""
-        out = torch.nn.functional.softmax(outputs, dim=1)
-        tar = torch.nn.functional.softmax(targets, dim=1)
-        if exp != 1:
-            out = out.pow(exp)
-            out = out / out.sum(1).view(-1, 1).expand_as(out)
-            tar = tar.pow(exp)
-            tar = tar / tar.sum(1).view(-1, 1).expand_as(tar)
-        out = out + eps / out.size(1)
-        out = out / out.sum(1).view(-1, 1).expand_as(out)
-        ce = -(tar * out.log()).sum(1)
-        if size_average:
-            ce = ce.mean()
-        return ce
+def self_logit_distill(outputs, targets, temperature):
+        """self-distillation with temperature scaling"""
+        new_soft_logits = nn.functional.log_softmax(outputs / temperature, dim=1)
+        old_soft_logits = nn.functional.softmax(targets / temperature, dim=1)
+        l_old = nn.functional.kl_div(new_soft_logits, old_soft_logits, reduction='batchmean') * (t ** 2)
+
+        return l_old
 
 tstart = time.time()
 logger = Logger(name="update.py", log_file="update.log", level=logging.INFO).get_logger()
@@ -102,7 +94,7 @@ parser.add_argument('-fix-bn',
                     action='store_true',
                     help='Fix batch normalization after first task')
 parser.add_argument('-lamb', 
-                    default=1., 
+                    default=0.5, 
                     type=float, 
                     help='regularization for L_old')
 parser.add_argument('-temperature', 
@@ -110,7 +102,7 @@ parser.add_argument('-temperature',
                     type=float, 
                     help='distillation temperature')
 args = parser.parse_args()
-print(args)
+logger.info(args)
 seed_all(args.seed)
 device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
 
@@ -158,11 +150,10 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         continue
 
     print('*' * 108)
-    print(f'Task {t:2d}')
+    logger.info(f'Task {t:2d}')
     print('*' * 108)
 
     if t > 0:
-
         net.add_head(taskcla[t][1]) 
         net.to(device)
 
@@ -171,7 +162,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
             params = list(net.model.parameters()) + list(net.heads[-1].parameters())
         else:
             params = net.parameters()
-        optimizer = optim.Adam(params, lr=1e-3, weight_decay=5e-4)
+        optimizer = optim.Adam(params, lr=1e-3, weight_decay=0.)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
 
@@ -193,10 +184,11 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
                 # L_new
                 loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
                 if t > 0:
-                    # L_old
-                    loss += args.lamb * cross_entropy(
+                    # \alpha * L_old
+                    loss += args.lamb * self_logit_distill(
                         torch.cat(outputs[:t], dim=1), 
-                        torch.cat(outputs_old[:t], dim=1), exp=1.0 / args.temperature)
+                        torch.cat(outputs_old[:t], dim=1), 
+                        args.temperature)
                     
                 optimizer.zero_grad()
                 loss.backward()
@@ -205,7 +197,6 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
 
             scheduler.step()
             clock1 = time.time()
-            print(f'| Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s |', end='')
 
             clock3 = time.time()
             with torch.no_grad():
@@ -226,20 +217,21 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
                     total_acc += acc.sum().item()
                 test_loss, test_acc = total_loss / total, total_acc / total
             clock4 = time.time()
-            print(f' test time={clock4 - clock3:5.2f}s loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}% |', end='')
+
+            rec_str = f'Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s, test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}%'
 
             if test_acc >= best_acc:
                 best_acc = test_acc
                 best_model = net.get_copy()
                 patience = args.lr_patience
-                print(' *', end='')
+                rec_str += ' *'
             else:
                 patience -= 1
                 if patience <= 0:
                     net.set_state_dict(best_model)
-                    print()
+                    logger.info(rec_str)
                     break
-            print()
+            logger.info(rec_str)
         net.set_state_dict(best_model)
 
         net_old = deepcopy(net)
@@ -247,7 +239,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         net_old.freeze_all()
 
     else:
-        print('already finish task 0 at prepare.py...')
+        logger.info('already finish task 0 at prepare.py...')
     
     print('-' * 108)
 
@@ -272,12 +264,26 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         if u < t:
             forg_taw[t, u] = acc_taw[:t, u].max(0) - acc_taw[t, u]
         res_tmp = f'>>> Test on task {u:2d} | TAw acc={100 * acc_taw[t, u]:5.1f}%, forg={100 * forg_taw[t, u]:5.1f}%'
-        print(res_tmp)
+        logger.info(res_tmp)
         res_out += res_tmp + '\n'
 
     # save
     torch.save(net.state_dict(), f'saved/best_edge_task{t}_{args.edge}_{args.dataset}.pt')
 
-print_summary(acc_taw, forg_taw)
-print('[Elapsed time = {:.1f} h]'.format((time.time() - tstart) / (60 * 60)))
-print('Done!')
+for name, metric in zip(['TAw Acc','TAw Forg'], [acc_taw, forg_taw]):
+    print('*' * 108)
+    logger.info(name)
+    for i in range(metric.shape[0]):
+        line = '\t'
+        for j in range(metric.shape[1]):
+            line += f'{100 * metric[i, j]:5.1f}% '
+        if np.trace(metric) == 0.0:
+            if i > 0:
+                line += f'\tAvg.:{100 * metric[i, :i].mean():5.1f}% '
+        else:
+            line += f'\tAvg.:{100 * metric[i, :i + 1].mean():5.1f}% '
+        logger.info(line)
+print('*' * 108)
+
+logger.info('[Elapsed time = {:.1f} h]'.format((time.time() - tstart) / (60 * 60)))
+logger.info('Done!')

@@ -12,6 +12,9 @@ class Logger:
         ensure_dir(f'./logs')
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
+        self.logger.propagate = False
+        self.logger.handlers.clear()
+
         self._add_file_handler(f'./logs/{log_file}', level)
         self._add_console_handler(level)
 
@@ -19,7 +22,7 @@ class Logger:
         file_handler = logging.FileHandler(log_file, mode="w")
         file_handler.setLevel(level)
         file_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            logging.Formatter("[%(asctime)s] - %(levelname)s - %(message)s")
         )
         self.logger.addHandler(file_handler)
 
@@ -27,7 +30,7 @@ class Logger:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(level)
         console_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            logging.Formatter("%(message)s")
         )
         self.logger.addHandler(console_handler)
 
@@ -47,23 +50,6 @@ def seed_all(seed=1029):
     torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-
-def print_summary(acc_taw, forg_taw):
-    """Print summary of results"""
-    for name, metric in zip(['TAw Acc','TAw Forg'], [acc_taw, forg_taw]):
-        print('*' * 108)
-        print(name)
-        for i in range(metric.shape[0]):
-            print('\t', end='')
-            for j in range(metric.shape[1]):
-                print('{:5.1f}% '.format(100 * metric[i, j]), end='')
-            if np.trace(metric) == 0.0:
-                if i > 0:
-                    print('\tAvg.:{:5.1f}% '.format(100 * metric[i, :i].mean()), end='')
-            else:
-                print('\tAvg.:{:5.1f}% '.format(100 * metric[i, :i + 1].mean()), end='')
-            print()
-    print('*' * 108)
 
 class BaseDataset(Dataset):
     """Characterizes a dataset for PyTorch -- this dataset pre-loads all images in memory"""
