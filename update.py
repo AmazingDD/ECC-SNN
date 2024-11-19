@@ -166,7 +166,12 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         net.add_head(taskcla[t][1]) 
         net.to(device)
 
-        optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=5e-4)
+        # if there are no exemplars, previous heads are not modified
+        if len(net.heads) > 1:
+            params = list(net.model.parameters()) + list(net.heads[-1].parameters())
+        else:
+            params = net.parameters()
+        optimizer = optim.Adam(params, lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
 
