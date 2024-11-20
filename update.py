@@ -109,7 +109,6 @@ device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "c
 trn_load = torch.load(f'saved/train_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 tst_load = torch.load(f'saved/test_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 taskcla = torch.load(f'saved/taskcla_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
-class_order = torch.load(f'saved/classorder_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
 
 max_task = len(taskcla) if args.stop_at_task == 0 else args.stop_at_task
 
