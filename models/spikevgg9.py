@@ -11,7 +11,7 @@ class Transform(nn.Module):
         return self.bn(self.conv(x))
 
 class SpikeVGG9(nn.Module):
-    def __init__(self, num_classes, C=3, H=32, W=32):
+    def __init__(self, num_classes, C=3, H=32, W=32, T=4):
         super(SpikeVGG9, self).__init__()
         self.features = nn.Sequential(
             layer.Conv2d(C, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False),
@@ -50,12 +50,19 @@ class SpikeVGG9(nn.Module):
         
         self.classifier_head = nn.Linear(in_features=1024, out_features=num_classes, bias=False)
 
-        functional.set_step_mode(self, "m")
+        self.T = T
+        functional.set_step_mode(self, "m") 
 
     def forward(self, x):
-        x = x.unsqueeze(0).repeat(self.T, 1, 1, 1, 1) # -> (T, B, C, H, W)
         functional.reset_net(self)
 
+        if len(x.shape) == 5: # neuromorphic (B, T, C, H, W)
+            x = x.transpose(0, 1) # ->(T, B, C, H, W)
+        elif len(x.shape) == 4: # static (B, C, H, W)
+            x = x.unsqueeze(0).repeat(self.T, 1, 1, 1, 1) # -> (T, B, C, H, W)
+        else:
+            raise NotImplementedError(f'Invalid inputs shape: {x.shape}')
+            
         x = self.features(x) #　[T, B, 256, 4, 4]
         feature_transform = self.transform(x).mean(0).detach() # [B, 256, 4, 4]
 

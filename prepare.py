@@ -86,7 +86,7 @@ parser.add_argument('-edge',
                     help='edge model name')
 parser.add_argument('-base', 
                     '--nc-first-task', 
-                    default=None, 
+                    default=0, 
                     type=int, 
                     required=False,
                     help='Number of classes of the first task')
@@ -121,7 +121,7 @@ logger.info(args)
 seed_all(args.seed)
 
 # ensure path to save model
-ensure_dir('saved/')
+ensure_dir(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}')
 
 device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
 
@@ -174,7 +174,7 @@ logger.info('Training cloud ANN')
 trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
 testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-model = model_conf[args.cloud](num_classes, C, H, W)
+model = model_conf[args.cloud](num_classes, C, H, W, args.T)
 model.to(device)
 
 criterion = nn.CrossEntropyLoss()
@@ -215,7 +215,7 @@ for epoch in range(args.cloud_epochs):
 
     if acc > best_acc:
         best_acc = acc
-        torch.save(deepcopy(model.state_dict()), f'saved/best_cloud_{args.cloud}_{args.dataset}.pt')
+        torch.save(deepcopy(model.state_dict()), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt')
 
 logger.info(f'Finished preparing cloud model with best test accuracy {best_acc}%...')
 
@@ -242,11 +242,11 @@ nc_first_task = args.nc_first_task
 class_order = list(range(num_classes))
 np.random.shuffle(class_order)
 
-if nc_first_task is None:
+if nc_first_task == 0: # no number of classes is assigned for base task 0, labels are evenly divided by num_tasks
     cpertask = np.array([num_classes // num_tasks] * num_tasks)
     for i in range(num_classes % num_tasks):
         cpertask[i] += 1
-else:
+else: # remaining labels are evenly divided by (num_tasks - 1)
     assert nc_first_task < num_classes, "first task wants more classes than exist"
     remaining_classes = num_classes - nc_first_task
     assert remaining_classes >= (num_tasks - 1), "at least one class is needed per task"
@@ -331,9 +331,7 @@ for tt in range(num_tasks):
                                 num_workers=args.workers, 
                                 pin_memory=True))
 
-init_model = model_conf[args.edge](num_classes, C, H, W)
-init_model.T = args.T
-
+init_model = model_conf[args.edge](num_classes, C, H, W, args.T)
 # base edge SNN
 seed_all(args.seed)
 net = NetHead(init_model)
@@ -416,14 +414,14 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         net.set_state_dict(best_model)
 
         # save base edge model
-        torch.save(net.get_copy(), f'saved/best_edge_base_{args.edge}_{args.dataset}.pt')
+        torch.save(net.get_copy(), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_base_{args.edge}.pt')
 
     else:
         logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
         init_model = model_conf[args.cloud](num_classes, C, H, W)
         init_model.load_state_dict(
-            torch.load(f'saved/best_cloud_{args.cloud}_{args.dataset}.pt', map_location='cpu'))
+            torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt', map_location='cpu'))
         seed_all(args.seed)
         c_net = NetHead(init_model)
         seed_all(args.seed)
@@ -437,7 +435,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
         
-        best_acc = -np.inf
+        best_acc, best_c_acc = -np.inf, -np.inf
         patience = args.lr_patience
         best_model = net.get_copy()
         for e in range(args.edge_epochs):
@@ -476,23 +474,34 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
             clock3 = time.time()
             with torch.no_grad():
                 total_loss, total_acc, total = 0, 0, 0
+                total_c_acc = 0
                 net.eval()
                 for images, targets in tst_load[t]:
                     outputs, _ = net(images.to(device))
                     loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
+
+                    c_outputs, _ = c_net(images.to(device))
                     # calculate batch accuracy 
                     pred = torch.zeros_like(targets.to(device))
+                    c_pred = torch.zeros_like(targets.to(device))
                     for m in range(len(pred)):
                         this_task = (net.task_cls.cumsum(0) <= targets[m]).sum()
                         pred[m] = outputs[this_task][m].argmax() + net.task_offset[this_task]
+                        c_pred[m] = c_outputs[this_task][m].argmax() + c_net.task_offset[this_task]
                     acc = (pred == targets.to(device)).float()
+                    c_acc = (c_pred == targets.to(device)).float()
 
                     total_loss += loss.item() * len(targets)
                     total += len(targets)
                     total_acc += acc.sum().item()
+
+                    total_c_acc += c_acc.sum().item()
                 test_loss, test_acc = total_loss / total, total_acc / total
+                test_c_acc = total_c_acc / total
             clock4 = time.time()
-            line += f'test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}%'
+            line += f'test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}%, test cloud acc={100 * test_c_acc:5.2f}%'
+
+            if test_c_acc >= best_c_acc: best_c_acc = test_c_acc
 
             if test_acc >= best_acc:
                 best_acc = test_acc
@@ -509,11 +518,13 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         net.set_state_dict(best_model)
 
         # save base edge model
-        torch.save(net.get_copy(), f'saved/best_edge_base_{args.edge}_{args.dataset}.pt')
+        torch.save(net.get_copy(), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_base_{args.edge}.pt')
 
-logger.info(f'Finished preparing edge SNN model with best test accuracy {100 * best_acc:5.2f}%...')
+        logger.info(f'The accuracy of cloud model for the first task is: {100 * best_c_acc:5.2f}%')
 
-torch.save(trn_load, f'saved/train_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
-torch.save(tst_load, f'saved/test_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
-torch.save(taskcla, f'saved/taskcla_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
-torch.save(class_order, f'saved/classorder_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
+logger.info(f'Finished preparing edge SNN model with best test accuracy {100 * best_acc:5.2f}%')
+
+torch.save(trn_load, f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/train_loader.pt')
+torch.save(tst_load, f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/test_loader.pt')
+torch.save(taskcla, f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/taskcla.pt')
+torch.save(class_order, f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/classorder.pt')

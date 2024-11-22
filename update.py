@@ -106,9 +106,9 @@ logger.info(args)
 seed_all(args.seed)
 device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
 
-trn_load = torch.load(f'saved/train_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
-tst_load = torch.load(f'saved/test_loader_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
-taskcla = torch.load(f'saved/taskcla_{args.dataset}_base{args.nc_first_task}_task{args.num_tasks}.pt')
+trn_load = torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/train_loader.pt')
+tst_load = torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/test_loader.pt')
+taskcla = torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/taskcla.pt')
 
 max_task = len(taskcla) if args.stop_at_task == 0 else args.stop_at_task
 
@@ -136,7 +136,7 @@ seed_all(args.seed)
 
 # add base task head
 net.add_head(taskcla[0][1]) 
-net.set_state_dict(torch.load(f'saved/best_edge_base_{args.edge}_{args.dataset}.pt', map_location='cpu'))
+net.set_state_dict(torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_base_{args.edge}.pt', map_location='cpu'))
 net.to(device)
 
 # post process for lwf, preparing for the next task, start from task 1
@@ -267,7 +267,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         res_out += res_tmp + '\n'
 
     # save
-    torch.save(net.state_dict(), f'saved/best_edge_task{t}_{args.edge}_{args.dataset}.pt')
+    torch.save(net.state_dict(), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_task{t}_{args.edge}.pt')
 
 for name, metric in zip(['TAw Acc','TAw Forg'], [acc_taw, forg_taw]):
     print('*' * 108)

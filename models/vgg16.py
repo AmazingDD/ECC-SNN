@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 class VGG16(nn.Module):
-    def __init__(self, num_classes=10, C=3, H=32, W=32):
+    def __init__(self, num_classes=10, C=3, H=32, W=32, T=4):
         super(VGG16, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(C, 64, kernel_size=3, padding=1),
@@ -65,11 +65,31 @@ class VGG16(nn.Module):
 
         self.classifier_head = nn.Linear(4096, num_classes)
 
-    def forward(self, x):     
+        self.T = T
+
+    def forward(self, x):  
+        logit, feature_transform = 0., 0.
+        if len(x.shape) == 5: # neuromorphic (B, T, C, H, W)
+            for ts in range(self.T):
+                a, b = self._forward(x[:, ts, ...]) 
+                logit += a
+                feature_transform += b
+
+            logit /= self.T
+            feature_transform /= self.T
+        elif len(x.shape) == 4: # static (B, C, H, W)
+            logit, feature_transform = self._forward(x)
+        else:
+            raise NotImplementedError(f'Invalid inputs shape: {x.shape}')
+        
+        return logit, feature_transform
+
+    def _forward(self, x):
+        # make sure this input only have dimension (B, C, H, W)
         feature_transform = None
         for i, layer in enumerate(self.features):
             x = layer(x)
-            if i == 23:
+            if i == 23: # rough index for vgg9 student
                 feature_transform = x.detach() # [B, 256, H//8, W//8]
 
         x = x.view(x.size(0), -1)
