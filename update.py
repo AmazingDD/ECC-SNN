@@ -74,9 +74,8 @@ parser.add_argument('-edge',
                     help='edge model name')
 parser.add_argument('-base', 
                     '--nc-first-task', 
-                    default=None, 
+                    default=0, 
                     type=int, 
-                    required=False,
                     help='Number of classes of the first task')
 parser.add_argument('-stop', 
                     '--stop-at-task', 
@@ -86,7 +85,7 @@ parser.add_argument('-stop',
                     help='Stop training after specified task')
 parser.add_argument('-nt', 
                     '--num-tasks', 
-                    default=5, 
+                    default=10, 
                     type=int, 
                     help='Number of tasks')
 parser.add_argument('-fix-bn', 
@@ -115,6 +114,9 @@ max_task = len(taskcla) if args.stop_at_task == 0 else args.stop_at_task
 # two matrix for final results
 acc_taw = np.zeros((max_task, max_task))
 forg_taw = np.zeros((max_task, max_task))
+
+acc_tag = np.zeros((max_task, max_task))
+forg_tag = np.zeros((max_task, max_task))
 
 if args.dataset == 'cifar100':
     num_classes = 100
@@ -243,10 +245,10 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
     print('-' * 108)
 
     # CIL Test 
-    res_out=''
     for u in range(t + 1):
         with torch.no_grad():
-            total_acc_taw, total_taw = 0, 0
+            total_acc_taw, total_acc_tag = 0, 0
+            total = 0
             net.eval()
             for images, targets in tst_load[u]:
                 outputs, _ = net(images.to(device))
@@ -255,21 +257,47 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
                     this_task = (net.task_cls.cumsum(0) <= targets[m]).sum()
                     pred[m] = outputs[this_task][m].argmax() + net.task_offset[this_task]
                 acc = (pred == targets.to(device)).float()
-                total_taw += len(targets)
                 total_acc_taw += acc.sum().item()
-            test_acc_taw = total_acc_taw / total_taw
+                
+                pred = torch.cat(outputs, dim=1).argmax(1)
+                acc = (pred == targets.to(device)).float()
+                total_acc_tag += acc.sum().item()
+
+                total += len(targets)
+
+            test_acc_taw = total_acc_taw / total
+            test_acc_tag = total_acc_tag / total
         
         acc_taw[t, u] = test_acc_taw
+        acc_tag[t, u] = test_acc_tag
         if u < t:
             forg_taw[t, u] = acc_taw[:t, u].max(0) - acc_taw[t, u]
+            forg_tag[t, u] = acc_tag[:t, u].max(0) - acc_tag[t, u]
         res_tmp = f'>>> Test on task {u:2d} | TAw acc={100 * acc_taw[t, u]:5.1f}%, forg={100 * forg_taw[t, u]:5.1f}%'
         logger.info(res_tmp)
-        res_out += res_tmp + '\n'
+
+        res_tmp = f'>>> Test on task {u:2d} | TAg acc={100 * acc_tag[t, u]:5.1f}%, forg={100 * forg_tag[t, u]:5.1f}%'
+        logger.info(res_tmp)
 
     # save
     torch.save(net.state_dict(), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_task{t}_{args.edge}.pt')
 
 for name, metric in zip(['TAw Acc','TAw Forg'], [acc_taw, forg_taw]):
+    print('*' * 108)
+    logger.info(name)
+    for i in range(metric.shape[0]):
+        line = '\t'
+        for j in range(metric.shape[1]):
+            line += f'{100 * metric[i, j]:5.1f}% '
+        if np.trace(metric) == 0.0:
+            if i > 0:
+                line += f'\tAvg.:{100 * metric[i, :i].mean():5.1f}% '
+        else:
+            line += f'\tAvg.:{100 * metric[i, :i + 1].mean():5.1f}% '
+        logger.info(line)
+print('*' * 108)
+
+for name, metric in zip(['TAg Acc','TAg Forg'], [acc_tag, forg_tag]):
     print('*' * 108)
     logger.info(name)
     for i in range(metric.shape[0]):

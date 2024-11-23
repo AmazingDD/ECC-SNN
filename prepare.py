@@ -17,10 +17,12 @@ from utils import *
 from models.base import NetHead
 from models.vgg16 import VGG16
 from models.spikevgg9 import SpikeVGG9
+from models.resnet import resnet50
 
 model_conf = {
     'vgg16': VGG16,
-    'svgg9': SpikeVGG9
+    'svgg9': SpikeVGG9,
+    'resnet50': resnet50
 }
 
 logger = Logger(name="prepare.py", log_file="prepare.log", level=logging.INFO).get_logger()
@@ -52,7 +54,7 @@ parser.add_argument('-patience',
                     help='Maximum patience to wait before decreasing learning rate')
 parser.add_argument('-b',
                     '--batch_size',
-                    default=64,
+                    default=128,
                     type=int,
                     metavar='N',
                     help='mini-batch size')
@@ -88,11 +90,10 @@ parser.add_argument('-base',
                     '--nc-first-task', 
                     default=0, 
                     type=int, 
-                    required=False,
                     help='Number of classes of the first task')
 parser.add_argument('-nt', 
                     '--num-tasks', 
-                    default=5, 
+                    default=10, 
                     type=int, 
                     help='Number of tasks')
 parser.add_argument('-fix-bn', 
@@ -103,14 +104,12 @@ parser.add_argument('-distill',
                     action='store_true', 
                     help='train edge with distillation or directly')
 parser.add_argument('-l1',
+                    type=float,
                     default=0.2,
-                    type=int,
-                    metavar='N',
                     help='logit distillation intensity')
 parser.add_argument('-l2',
+                    type=float,
                     default=0.2,
-                    type=int,
-                    metavar='N',
                     help='feature distillation intensity')
 parser.add_argument('-temperature', 
                     type=float, 
@@ -169,55 +168,59 @@ else:
 ############################################################################################
 ############### Preparing Cloud ANN model with all dataset to make it Oracle ###############
 ############################################################################################
-logger.info('Training cloud ANN')
 
-trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
-testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+if os.path.exists(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt'):
+    logger.info(f'Already have trained cloud model {args.cloud} for {args.dataset} Base{args.nc_first_task}-Inc{args.num_tasks}')
+else:
+    logger.info('Training cloud ANN')
 
-model = model_conf[args.cloud](num_classes, C, H, W, args.T)
-model.to(device)
+    trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+    testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
-scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
+    model = model_conf[args.cloud](num_classes, C, H, W, args.T)
+    model.to(device)
 
-best_acc = 0.
-for epoch in range(args.cloud_epochs):
-    model.train()
-    running_loss = 0.
-    for images, labels in tqdm(trainloader, unit='batch'):
-        optimizer.zero_grad()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
 
-        images, labels = images.to(device), labels.to(device)
-        logits, _ = model(images)
-        loss = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
+    best_acc = 0.
+    for epoch in range(args.cloud_epochs):
+        model.train()
+        running_loss = 0.
+        for images, labels in tqdm(trainloader, unit='batch'):
+            optimizer.zero_grad()
 
-        running_loss += loss.item()
-
-    scheduler.step()
-    logger.info(f'Epoch [{epoch + 1}/ {args.cloud_epochs}], Loss: {running_loss / len(trainloader)}')
-
-    model.eval()
-    correct, total = 0, 0
-    with torch.no_grad():
-        for images, labels in testloader:
             images, labels = images.to(device), labels.to(device)
             logits, _ = model(images)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
 
-            _, predicted = torch.max(logits.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+            running_loss += loss.item()
 
-    acc = 100 * correct / total
-    logger.info(f'Test Accuracy on {args.dataset} for cloud {args.cloud}: {acc:.2f}%')
+        scheduler.step()
+        logger.info(f'Epoch [{epoch + 1}/ {args.cloud_epochs}], Loss: {running_loss / len(trainloader)}')
 
-    if acc > best_acc:
-        best_acc = acc
-        torch.save(deepcopy(model.state_dict()), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt')
+        model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for images, labels in testloader:
+                images, labels = images.to(device), labels.to(device)
+                logits, _ = model(images)
 
-logger.info(f'Finished preparing cloud model with best test accuracy {best_acc}%...')
+                _, predicted = torch.max(logits.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        acc = 100 * correct / total
+        logger.info(f'Test Accuracy on {args.dataset} for cloud {args.cloud}: {acc:.2f}%')
+
+        if acc > best_acc:
+            best_acc = acc
+            torch.save(deepcopy(model.state_dict()), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt')
+
+    logger.info(f'Finished preparing cloud model with best test accuracy {best_acc}%...')
 
 #########################################################################################
 ####################### prepare incremental scenario for edge SNN #######################
@@ -417,25 +420,23 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         torch.save(net.get_copy(), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_base_{args.edge}.pt')
 
     else:
+        total_cls_in_t = net.task_cls.sum().item()
+        cloud_label_index = class_order[:total_cls_in_t]
+
         logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
-        init_model = model_conf[args.cloud](num_classes, C, H, W)
-        init_model.load_state_dict(
+        c_net = model_conf[args.cloud](num_classes, C, H, W, args.T)
+        c_net.load_state_dict(
             torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt', map_location='cpu'))
-        seed_all(args.seed)
-        c_net = NetHead(init_model)
-        seed_all(args.seed)
-        c_net.add_head(taskcla[t][1]) 
         c_net.to(device)
-        # this only freeze the cloud model weight, but the classifier_head can update
-        c_net.freeze_backbone() 
+        c_net.eval()
         logger.info('cloud model loaded successfully...')
 
-        optimizer = optim.Adam(list(net.parameters()) + list(c_net.heads.parameters()), lr=1e-3, weight_decay=5e-4)
+        optimizer = optim.Adam(list(net.parameters()), lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
         
-        best_acc, best_c_acc = -np.inf, -np.inf
+        best_acc = -np.inf
         patience = args.lr_patience
         best_model = net.get_copy()
         for e in range(args.edge_epochs):
@@ -446,14 +447,20 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
             for images, targets in trn_load[t]:
                 images = images.to(device)
                 targets = targets.to(device)
-                c_outputs, c_feature = c_net(images)
+
+                # cloud infer
+                c_logit, c_feature = c_net(images)
+                # select those labels occured in current task, and convert them to new index
+                c_logit = c_logit[:, cloud_label_index] 
+
+                # edge infer
                 e_outputs, e_feature = net(images)
 
                 # ce loss
                 loss = criterion(e_outputs[t], targets.to(device) - net.task_offset[t])
 
                 # logit loss
-                soft_targets = nn.functional.softmax(c_outputs[t] / args.temperature, dim=1)
+                soft_targets = nn.functional.softmax(c_logit / args.temperature, dim=1)
                 soft_logits = nn.functional.log_softmax(e_outputs[t] / args.temperature, dim=1)
                 loss_logit = nn.functional.kl_div(soft_logits, soft_targets, reduction='batchmean') * (args.temperature ** 2)
                 loss += args.l1 * loss_logit
@@ -480,15 +487,17 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                     outputs, _ = net(images.to(device))
                     loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
 
-                    c_outputs, _ = c_net(images.to(device))
+                    c_logit, _ = c_net(images.to(device))
+                    c_logit = c_logit[:, cloud_label_index]
+
                     # calculate batch accuracy 
                     pred = torch.zeros_like(targets.to(device))
-                    c_pred = torch.zeros_like(targets.to(device))
                     for m in range(len(pred)):
                         this_task = (net.task_cls.cumsum(0) <= targets[m]).sum()
                         pred[m] = outputs[this_task][m].argmax() + net.task_offset[this_task]
-                        c_pred[m] = c_outputs[this_task][m].argmax() + c_net.task_offset[this_task]
                     acc = (pred == targets.to(device)).float()
+
+                    _, c_pred = torch.max(c_logit, 1)
                     c_acc = (c_pred == targets.to(device)).float()
 
                     total_loss += loss.item() * len(targets)
@@ -496,12 +505,12 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                     total_acc += acc.sum().item()
 
                     total_c_acc += c_acc.sum().item()
+
                 test_loss, test_acc = total_loss / total, total_acc / total
                 test_c_acc = total_c_acc / total
+
             clock4 = time.time()
             line += f'test time={clock4 - clock3:5.2f}s, loss={test_loss:.3f}, test acc={100 * test_acc:5.2f}%, test cloud acc={100 * test_c_acc:5.2f}%'
-
-            if test_c_acc >= best_c_acc: best_c_acc = test_c_acc
 
             if test_acc >= best_acc:
                 best_acc = test_acc
@@ -519,8 +528,6 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
 
         # save base edge model
         torch.save(net.get_copy(), f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_base_{args.edge}.pt')
-
-        logger.info(f'The accuracy of cloud model for the first task is: {100 * best_c_acc:5.2f}%')
 
 logger.info(f'Finished preparing edge SNN model with best test accuracy {100 * best_acc:5.2f}%')
 
