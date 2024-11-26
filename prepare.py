@@ -18,11 +18,15 @@ from models.base import NetHead
 from models.vgg16 import VGG16
 from models.spikevgg9 import SpikeVGG9
 from models.resnet import resnet50
+from models.spikevit import SVIT
+from models.vit import VIT
 
 model_conf = {
     'vgg16': VGG16,
     'svgg9': SpikeVGG9,
-    'resnet50': resnet50
+    'resnet50': resnet50,
+    'svit': SVIT,
+    'vit': VIT,
 }
 
 logger = Logger(name="prepare.py", log_file="prepare.log", level=logging.INFO).get_logger()
@@ -105,7 +109,7 @@ parser.add_argument('-distill',
                     help='train edge with distillation or directly')
 parser.add_argument('-l1',
                     type=float,
-                    default=0.2,
+                    default=0.5,
                     help='logit distillation intensity')
 parser.add_argument('-l2',
                     type=float,
@@ -158,10 +162,32 @@ elif args.dataset == 'cifar100':
     num_classes = 100
     C, H, W = 3, 32, 32
 
-elif args.dataset == 'tiny-imagenet':
+elif args.dataset == 'imagenet':
     # TODO
+    transform_train = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    ])
+
+    transform_test = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    ])
+
+    train_set = torchvision.datasets.ImageFolder('./tiny-imagenet-200/train', transform=transform_train)
+    test_set = torchvision.datasets.ImageFolder('./tiny-imagenet-200/val', transform=transform_test)
+
     num_classes = 200
-    C, H, W = 3, 128, 128
+    C, H, W = 3, 224, 224
+elif args.dataset == 'cifardvs':
+    train_set = DVSCifar10(root='./cifar-dvs/train', transform=True)
+    test_set = DVSCifar10(root='./cifar-dvs/test', transform=False)
+    num_classes = 10
+    C, H, W = 2, 48, 48 # T = 10, S-VGG
 else:
     raise NotImplementedError(f'Invalid dataset name: {args.dataset}')
 
@@ -179,6 +205,9 @@ else:
 
     model = model_conf[args.cloud](num_classes, C, H, W, args.T)
     model.to(device)
+
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"number of params for cloud model: {n_parameters}")
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
@@ -340,6 +369,9 @@ seed_all(args.seed)
 net = NetHead(init_model)
 seed_all(args.seed)
 net_old = None
+
+n_parameters = sum(p.numel() for p in net.parameters() if p.requires_grad)
+logger.info(f"number of params for base edge model: {n_parameters}")
 
 for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare stage
     if t > 0: 
