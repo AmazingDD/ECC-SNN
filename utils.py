@@ -159,7 +159,7 @@ class DVSCifar10(Dataset):
     def __len__(self):
         return len(os.listdir(self.root))
 
-class NCaltech101(Dataset):
+class NCaltech(Dataset):
     def __init__(self, data_path='data/n-caltech/frames_number_10_split_by_number', data_type='train', transform=False):
         super().__init__()
 
@@ -195,3 +195,32 @@ class NCaltech101(Dataset):
             counts = np.unique(np.array(self.targets), return_counts=True)[1]
             class_weights = counts.sum() / (counts * len(counts))
             self.class_weights = torch.Tensor(class_weights)
+
+        self.classes = range(101)
+        self.transform = transform
+        self.rotate = transforms.RandomRotation(degrees=15)
+        self.shearx = transforms.RandomAffine(degrees=0, shear=(-15, 15))
+
+    def __getitem__(self, index):
+        file_pth = self.dvs_filelist[index]
+        label = self.targets[index]
+        data = torch.from_numpy(np.load(file_pth)['frames']).float()
+        data = self.resize(data)
+
+        if self.transform:
+
+            choices = ['roll', 'rotate', 'shear']
+            aug = np.random.choice(choices)
+            if aug == 'roll':
+                off1 = random.randint(-3, 3)
+                off2 = random.randint(-3, 3)
+                data = torch.roll(data, shifts=(off1, off2), dims=(2, 3))
+            if aug == 'rotate':
+                data = self.rotate(data)
+            if aug == 'shear':
+                data = self.shearx(data)
+
+        return data, label
+
+    def __len__(self):
+        return self.data_num

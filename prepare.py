@@ -13,6 +13,8 @@ from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
 
+from spikingjelly.datasets.n_caltech101 import NCaltech101
+
 from utils import *
 from models.base import NetHead
 from models.vgg16 import VGG16
@@ -188,6 +190,12 @@ elif args.dataset == 'cifardvs':
     test_set = DVSCifar10(root='./cifar-dvs/test', transform=False)
     num_classes = 10
     C, H, W = 2, 48, 48 # T = 10, S-VGG
+elif args.dataset == 'ncaltech':
+    NCaltech101(root='data', data_type='frame', frames_number=args.T, split_by='time')
+    train_set = NCaltech(transform=True)
+    test_set = NCaltech(data_type='test', transform=False)
+    num_classes = 101
+    C, H, W = 2, 48, 48 # T = 10
 else:
     raise NotImplementedError(f'Invalid dataset name: {args.dataset}')
 
