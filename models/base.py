@@ -8,10 +8,10 @@ class NetHead(nn.Module):
 
         self.model = model
 
-        last_layer = getattr(model, 'classifier_head')
+        last_layer = getattr(model, 'classifier')
 
         self.out_size = last_layer.in_features
-        setattr(self.model, 'classifier_head', nn.Sequential()) # then logit turns to identity output from last layer
+        setattr(self.model, 'classifier', nn.Sequential()) # then logit turns to identity output from last layer
 
         self.heads = nn.ModuleList()
         self.task_cls = []

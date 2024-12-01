@@ -63,7 +63,7 @@ class VGG16(nn.Module):
             nn.Dropout(),
         )
 
-        self.classifier_head = nn.Linear(4096, num_classes)
+        self.classifier = nn.Linear(4096, num_classes)
 
         self.T = T
 
@@ -95,6 +95,6 @@ class VGG16(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.mlp(x)
 
-        logit = self.classifier_head(x)
+        logit = self.classifier(x)
 
         return logit, feature_transform 

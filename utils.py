@@ -1,4 +1,5 @@
 import os
+import pickle
 import random
 import logging
 import numpy as np
@@ -72,59 +73,35 @@ class BaseDataset(Dataset):
         x = self.transform(x)
         y = self.labels[index]
         return x, y
-    
+
 class TinyImageNetDataset(Dataset):
-    def __init__(self, data_dir='./tiny-imagenet-200', transform=None, split='train'):
+    def __init__(self, root='./tiny-imagenet-200', train=True, transform=None):
         super().__init__()
 
-        self.data_dir = data_dir
+        self.root = root
         self.transform = transform
-        self.split = split
-        self.images = []
-        self.labels = []
+        self.train = train
 
-        if split == 'train':
-            self._load_train_data()
-        elif split == 'val':
-            self._load_val_data()
-        elif split == 'test':
-            self._load_test_data()
+        if self.train:
+            with open(os.path.join(self.root, 'train_dataset.pkl'), 'rb') as f:
+                self.data, self.targets = pickle.load(f)
+        else:
+            with open(os.path.join(self.root, 'val_dataset.pkl'), 'rb') as f:
+                self.data, self.targets = pickle.load(f)
 
-    def _load_train_data(self):
-        for class_name in os.listdir(os.path.join(self.data_dir, 'train')):
-            class_dir = os.path.join(self.data_dir, 'train', class_name, 'images')
-            if os.path.isdir(class_dir):
-                for img_name in os.listdir(class_dir):
-                    self.images.append(os.path.join(class_dir, img_name))
-                    self.labels.append(class_name)
+        self.targets = self.targets.type(torch.LongTensor)
 
-    def _load_val_data(self):
-        val_dir = os.path.join(self.data_dir, 'val')
-        annotations_path = os.path.join(val_dir, 'val_annotations.txt')
-        with open(annotations_path, 'r') as f:
-            annotations = f.readlines()
-        img_to_class = {line.split('\t')[0]: line.split('\t')[1] for line in annotations}
-        for img_name, class_name in img_to_class.items():
-            self.images.append(os.path.join(val_dir, 'images', img_name))
-            self.labels.append(class_name)
+    def __getitem__(self, index):
 
-    def _load_test_data(self):
-        test_dir = os.path.join(self.data_dir, 'test', 'images')
-        for img_name in os.listdir(test_dir):
-            self.images.append(os.path.join(test_dir, img_name))
-        self.labels = [-1] * len(self.images)
-
-    def __len__(self):
-        return len(self.images)
-    
-    def __getitem__(self, idx):
-        img_path = self.images[idx]
-        img = Image.open(img_path).convert('RGB')
+        data = self.data[index]
         if self.transform:
-            img = self.transform(img)
-        label = self.labels[idx]
-        return img, label
+            data = self.transform(data)
+
+        return data, self.labels[index] 
     
+    def __len__(self):
+        return len(self.targets)
+
 class DVSCifar10(Dataset):
     def __init__(self, root, train=True, transform=None):
         super().__init__()

@@ -1,4 +1,5 @@
 import time
+import math
 import argparse
 import numpy as np
 from tqdm import tqdm
@@ -42,7 +43,7 @@ parser.add_argument('-j',
                     help='number of data loading workers (default: 10)')
 parser.add_argument('-ce',
                     '--cloud_epochs',
-                    default=200,
+                    default=30, # 200 for training from scratch, 30 for fine tune
                     type=int,
                     metavar='N',
                     help='number of total epochs to run cloud model')
@@ -60,7 +61,7 @@ parser.add_argument('-patience',
                     help='Maximum patience to wait before decreasing learning rate')
 parser.add_argument('-b',
                     '--batch_size',
-                    default=128,
+                    default=64, # 128
                     type=int,
                     metavar='N',
                     help='mini-batch size')
@@ -71,7 +72,7 @@ parser.add_argument('-seed',
                     help='seed for initializing training.')
 parser.add_argument('-gpu',
                     '--gpu_id',
-                    default=6,
+                    default=0,
                     type=int,
                     help='GPU ID to use')
 parser.add_argument('-T',
@@ -81,15 +82,15 @@ parser.add_argument('-T',
                     help='snn simulation time (default: 2)')
 parser.add_argument('-dataset',
                     '--dataset',
-                    default='cifar100',
+                    default='imagenet', # cifar100
                     type=str,
-                    help='cifar10, cifar100')
+                    help='dataset name')
 parser.add_argument('-cloud',
-                    default='vgg16',
+                    default='vit', # vgg16
                     type=str,
                     help='cloud model name')
 parser.add_argument('-edge',
-                    default='svgg9',
+                    default='svit', # svgg9
                     type=str,
                     help='edge model name')
 parser.add_argument('-base', 
@@ -129,6 +130,7 @@ seed_all(args.seed)
 ensure_dir(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}')
 
 device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
+logger.info(f'Device: {device}')
 
 if args.dataset == 'cifar10':
     transform_train = transforms.Compose([
@@ -165,26 +167,26 @@ elif args.dataset == 'cifar100':
     C, H, W = 3, 32, 32
 
 elif args.dataset == 'imagenet':
-    # TODO
     transform_train = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
+        transforms.ToPILImage(),
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     ])
 
     transform_test = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        transforms.ToPILImage(),
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     ])
 
-    train_set = torchvision.datasets.ImageFolder('./tiny-imagenet-200/train', transform=transform_train)
-    test_set = torchvision.datasets.ImageFolder('./tiny-imagenet-200/val', transform=transform_test)
-
     num_classes = 200
     C, H, W = 3, 224, 224
+
+    train_set = TinyImageNetDataset('./tiny-imagenet-200', train=True, transform=transform_train)
+    test_set = TinyImageNetDataset('./tiny-imagenet-200', train=False, transform=transform_test)
+
 elif args.dataset == 'cifardvs':
     train_set = DVSCifar10(root='./cifar-dvs/train', transform=True)
     test_set = DVSCifar10(root='./cifar-dvs/test', transform=False)
@@ -212,14 +214,24 @@ else:
     testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
     model = model_conf[args.cloud](num_classes, C, H, W, args.T)
+    print(model)
+
+    for name, param in model.named_parameters():
+        print(f"{name}: {param.requires_grad}")
+        
     model.to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"number of params for cloud model: {n_parameters}")
+    logger.info(f"number of params for cloud model: {n_parameters / 100000}M")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
+    if args.cloud in ('vit'):
+        # fine-tune
+        optimizer = optim.AdamW(model.classifier.parameters(), lr=1e-3, weight_decay=0.05)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=math.ceil(len(trainloader) / 2) * args.cloud_epochs)
+    else:
+        optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
+        scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
 
     best_acc = 0.
     for epoch in range(args.cloud_epochs):
@@ -269,7 +281,8 @@ elif 'cifar' in args.dataset:
     trn_data = {'x': train_set.data, 'y': train_set.targets}
     tst_data = {'x': test_set.data, 'y': test_set.targets}
 elif 'imagenet' in args.dataset:
-    pass
+    trn_data = {'x': train_set.dataset.numpy(), 'y': train_set.labels.tolist()}
+    tst_data = {'x': test_set.dataset.numpy(), 'y': test_set.labels.tolist()}
 else:
     raise ValueError(f'the selected dataset {args.dataset} is to be added')
 
@@ -506,7 +519,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 loss += args.l1 * loss_logit
 
                 # feature loss if overlapping case
-                if (args.cloud == 'vgg16' and args.edge == 'svgg9') or (args.cloud == 'vit4' and args.edge == 'svit1'):
+                if (args.cloud == 'vgg16' and args.edge == 'svgg9'):
                     loss_align = nn.functional.mse_loss(e_feature, c_feature)
                     loss += args.l2 * loss_align
 

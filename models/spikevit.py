@@ -194,7 +194,7 @@ class SVIT(nn.Module):
 
         self.transform = Transform(64)
 
-        self.classifier_head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        self.classifier = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
         self.apply(self._init_weights)
 
@@ -234,6 +234,6 @@ class SVIT(nn.Module):
         x, feature_transform = self.forward_features(x)
         x = x.mean(0)
         
-        x = self.classifier_head(x)
+        x = self.classifier(x)
 
         return x, feature_transform.mean(0).detach()

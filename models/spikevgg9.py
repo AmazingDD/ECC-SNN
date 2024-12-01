@@ -48,7 +48,7 @@ class SpikeVGG9(nn.Module):
             neuron.LIFNode(v_threshold=1.0, v_reset=0.0, detach_reset=True, tau=2.0),
         )
         
-        self.classifier_head = nn.Linear(in_features=1024, out_features=num_classes, bias=False)
+        self.classifier = nn.Linear(in_features=1024, out_features=num_classes, bias=False)
 
         self.T = T
         functional.set_step_mode(self, "m") 
@@ -68,6 +68,6 @@ class SpikeVGG9(nn.Module):
 
         x = self.mlp(x).mean(0)
 
-        logit = self.classifier_head(x)
+        logit = self.classifier(x)
 
         return logit, feature_transform
