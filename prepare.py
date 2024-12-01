@@ -179,7 +179,7 @@ elif args.dataset == 'imagenet':
     ])
 
     transform_test = transforms.Compose([
-        transforms.ToPILImage(),
+        transforms.Lambda(lambda img: img if isinstance(img, Image.Image) else transforms.ToPILImage()(img)),
         transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
@@ -228,7 +228,7 @@ else:
         
     model.to(device)
 
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_parameters = sum(p.numel() for p in model.parameters() if hasattr(p, 'requires_grad'))
     logger.info(f"number of params for cloud model: {n_parameters}")
 
     criterion = nn.CrossEntropyLoss()
@@ -394,15 +394,17 @@ for tt in range(num_tasks):
                                 shuffle=False, 
                                 num_workers=args.workers, 
                                 pin_memory=True))
-
-init_model = model_conf[args.edge](num_classes, C, H, W, args.T)
+if args.dataset in ('imagenet'):
+    init_model = model_conf[args.edge](num_classes, C, 64, 64, T=args.T)
+else:
+    init_model = model_conf[args.edge](num_classes, C, H, W, T=args.T)
 # base edge SNN
 seed_all(args.seed)
 net = NetHead(init_model)
 seed_all(args.seed)
 net_old = None
 
-n_parameters = sum(p.numel() for p in net.parameters() if p.requires_grad)
+n_parameters = sum(p.numel() for p in net.parameters() if hasattr(p, 'requires_grad'))
 logger.info(f"number of params for base edge model: {n_parameters}")
 
 for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare stage
@@ -432,6 +434,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
             if args.fix_bn and t > 0:
                 net.freeze_bn()
             for images, targets in trn_load[t]:
+                if args.dataset in ('imagenet'):
+                    images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                 outputs, _ = net(images.to(device))
                 loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
                 
@@ -449,6 +453,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 total_loss, total_acc, total = 0, 0, 0
                 net.eval()
                 for images, targets in tst_load[t]:
+                    if args.dataset in ('imagenet'):
+                        images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                     outputs, _ = net(images.to(device))
                     loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
                     # calculate batch accuracy 

@@ -179,7 +179,7 @@ class SVIT(nn.Module):
         self.T = T
         self.num_classes = num_classes
 
-        self.depths = 8
+        self.depths = 4
         self.embed_dim = 512
         self.patch_size = 16
 
@@ -191,8 +191,6 @@ class SVIT(nn.Module):
             embed_dims=self.embed_dim)
         
         self.block = nn.ModuleList([Block(dim=self.embed_dim, num_heads=8, mlp_ratio=4) for _ in range(self.depths)])
-
-        self.transform = Transform(64)
 
         self.classifier = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
@@ -210,11 +208,9 @@ class SVIT(nn.Module):
         block = getattr(self, f"block")
         patch_embed = getattr(self, f"patch_embed")
 
-        feature_transform = None
+        feature_transform = 0.
 
         x = patch_embed(x)
-
-        feature_transform = self.transform(x) # (T, B, N, C)
     
         for blk in block:
             x = blk(x)
@@ -236,4 +232,4 @@ class SVIT(nn.Module):
         
         x = self.classifier(x)
 
-        return x, feature_transform.mean(0).detach()
+        return x, feature_transform
