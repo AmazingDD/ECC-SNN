@@ -8,6 +8,7 @@ class VIT(nn.Module):
         super().__init__()
 
         if pretrain:
+            # we use pretrain model for static imagenet task
             try:
                 self.vit = create_model('vit_base_patch16_224', pretrained=True, drop_path_rate=0.1)
             except:
@@ -18,6 +19,7 @@ class VIT(nn.Module):
             for param in self.vit.parameters():
                 param.requires_grad = False
         else:
+            # for other dataset like cifar100, and dvs image, since they are small, we can train from scratch
             self.vit = create_model('vit_base_patch16_224', pretrained=False, drop_path_rate=0.1)
 
             self.vit.patch_embed.img_size = (H, W)

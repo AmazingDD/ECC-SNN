@@ -3,6 +3,7 @@ import math
 import argparse
 import numpy as np
 from tqdm import tqdm
+from PIL import Image
 from copy import deepcopy
 
 import torch
@@ -107,6 +108,9 @@ parser.add_argument('-fix-bn',
                     '--fix-bn', 
                     action='store_true',
                     help='Fix batch normalization after first task')
+parser.add_argument('-pretrain', 
+                    action='store_true',
+                    help='using pretrained vit model for imagenet')
 parser.add_argument('-distill', 
                     action='store_true', 
                     help='train edge with distillation or directly')
@@ -168,7 +172,7 @@ elif args.dataset == 'cifar100':
 
 elif args.dataset == 'imagenet':
     transform_train = transforms.Compose([
-        transforms.ToPILImage(),
+        transforms.Lambda(lambda img: img if isinstance(img, Image.Image) else transforms.ToPILImage()(img)),
         transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
@@ -213,7 +217,10 @@ else:
     trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
     testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-    model = model_conf[args.cloud](num_classes, C, H, W, args.T)
+    if args.cloud == 'vit':
+        model = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
+    else:
+        model = model_conf[args.cloud](num_classes, C, H, W, args.T)
     print(model)
 
     for name, param in model.named_parameters():
@@ -222,13 +229,16 @@ else:
     model.to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"number of params for cloud model: {n_parameters / 100000}M")
+    logger.info(f"number of params for cloud model: {n_parameters}")
 
     criterion = nn.CrossEntropyLoss()
-    if args.cloud in ('vit'):
+    if args.cloud in ('vit') and args.pretrain:
         # fine-tune
         optimizer = optim.AdamW(model.classifier.parameters(), lr=1e-3, weight_decay=0.05)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=math.ceil(len(trainloader) / 2) * args.cloud_epochs)
+    elif args.cloud in ('vit') and not args.pretrain:
+        optimizer = optim.AdamW(model.classifier.parameters(), lr=5e-3, weight_decay=0.05)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
     else:
         optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
@@ -281,10 +291,11 @@ elif 'cifar' in args.dataset:
     trn_data = {'x': train_set.data, 'y': train_set.targets}
     tst_data = {'x': test_set.data, 'y': test_set.targets}
 elif 'imagenet' in args.dataset:
-    trn_data = {'x': train_set.dataset.numpy(), 'y': train_set.labels.tolist()}
-    tst_data = {'x': test_set.dataset.numpy(), 'y': test_set.labels.tolist()}
+    trn_data = {'x': train_set.data.permute(0, 2, 3, 1), 'y': train_set.targets.tolist()} 
+    tst_data = {'x': test_set.data.permute(0, 2, 3, 1), 'y': test_set.targets.tolist()}
 else:
     raise ValueError(f'the selected dataset {args.dataset} is to be added')
+
 
 data = {}
 taskcla = [] # record each task contains how many labels

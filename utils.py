@@ -97,7 +97,7 @@ class TinyImageNetDataset(Dataset):
         if self.transform:
             data = self.transform(data)
 
-        return data, self.labels[index] 
+        return data, self.targets[index] 
     
     def __len__(self):
         return len(self.targets)
