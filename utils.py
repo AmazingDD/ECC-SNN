@@ -92,8 +92,8 @@ class TinyImageNetDataset(Dataset):
         self.targets = self.targets.type(torch.LongTensor)
 
     def __getitem__(self, index):
-
-        data = self.data[index]
+        data = self.data[index].permute(1, 2, 0).numpy()
+        data = Image.fromarray(data)
         if self.transform:
             data = self.transform(data)
 

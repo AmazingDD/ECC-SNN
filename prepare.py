@@ -172,14 +172,12 @@ elif args.dataset == 'cifar100':
 
 elif args.dataset == 'imagenet':
     transform_train = transforms.Compose([
-        transforms.Lambda(lambda img: img if isinstance(img, Image.Image) else transforms.ToPILImage()(img)),
         transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
     ])
 
     transform_test = transforms.Compose([
-        transforms.Lambda(lambda img: img if isinstance(img, Image.Image) else transforms.ToPILImage()(img)),
         transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
@@ -217,7 +215,7 @@ else:
     trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
     testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-    if args.cloud == 'vit':
+    if args.cloud in ('vit'):
         model = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
     else:
         model = model_conf[args.cloud](num_classes, C, H, W, args.T)
@@ -291,8 +289,8 @@ elif 'cifar' in args.dataset:
     trn_data = {'x': train_set.data, 'y': train_set.targets}
     tst_data = {'x': test_set.data, 'y': test_set.targets}
 elif 'imagenet' in args.dataset:
-    trn_data = {'x': train_set.data.permute(0, 2, 3, 1), 'y': train_set.targets.tolist()} 
-    tst_data = {'x': test_set.data.permute(0, 2, 3, 1), 'y': test_set.targets.tolist()}
+    trn_data = {'x': train_set.data.permute(0, 2, 3, 1).numpy(), 'y': train_set.targets.tolist()} 
+    tst_data = {'x': test_set.data.permute(0, 2, 3, 1).numpy(), 'y': test_set.targets.tolist()}
 else:
     raise ValueError(f'the selected dataset {args.dataset} is to be added')
 
@@ -433,7 +431,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
             net.train()
             if args.fix_bn and t > 0:
                 net.freeze_bn()
-            for images, targets in trn_load[t]:
+            for images, targets in tqdm(trn_load[t], unit='batch'):
                 if args.dataset in ('imagenet'):
                     images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                 outputs, _ = net(images.to(device))
@@ -495,7 +493,10 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
 
         logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
-        c_net = model_conf[args.cloud](num_classes, C, H, W, args.T)
+        if args.cloud in ('vit'):
+            c_net = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
+        else:
+            c_net = model_conf[args.cloud](num_classes, C, H, W, args.T)
         c_net.load_state_dict(
             torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_cloud_{args.cloud}.pt', map_location='cpu'))
         c_net.to(device)
@@ -514,16 +515,18 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
             net.train()
             if args.fix_bn and t > 0:
                 net.freeze_bn()
-            for images, targets in trn_load[t]:
-                images = images.to(device)
+            for images, targets in tqdm(trn_load[t], unit='batch'):
+                images = images.to(device) 
                 targets = targets.to(device)
 
                 # cloud infer
                 c_logit, c_feature = c_net(images)
                 # select those labels occured in current task, and convert them to new index
                 c_logit = c_logit[:, cloud_label_index] 
-
+                
                 # edge infer
+                if args.dataset in ('imagenet'):
+                    images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                 e_outputs, e_feature = net(images)
 
                 # ce loss
@@ -554,11 +557,13 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 total_c_acc = 0
                 net.eval()
                 for images, targets in tst_load[t]:
-                    outputs, _ = net(images.to(device))
-                    loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
-
                     c_logit, _ = c_net(images.to(device))
                     c_logit = c_logit[:, cloud_label_index]
+
+                    if args.dataset in ('imagenet'):
+                        images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
+                    outputs, _ = net(images.to(device))
+                    loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
 
                     # calculate batch accuracy 
                     pred = torch.zeros_like(targets.to(device))
