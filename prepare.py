@@ -36,7 +36,10 @@ model_conf = {
     'sresnet': resnet14,
 }
 
-logger = Logger(name="prepare.py", log_file="prepare.log", level=logging.INFO).get_logger()
+logger = Logger(
+    name="prepare.py", 
+    log_file=f"prepare_{get_local_time()}.log", 
+    level=logging.INFO).get_logger()
 
 parser = argparse.ArgumentParser(description='Setup stage for ECC-SNN')
 parser.add_argument('-j',

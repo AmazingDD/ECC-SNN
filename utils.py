@@ -2,12 +2,18 @@ import os
 import pickle
 import random
 import logging
+import datetime
 import numpy as np
 from PIL import Image
 
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
+
+def get_local_time():
+    cur = datetime.datetime.now()
+    cur = cur.strftime('%b-%d-%Y_%H-%M-%S')
+    return cur
 
 class Logger:
     def __init__(self, name: str, log_file: str = "app.log", level: int = logging.INFO):
