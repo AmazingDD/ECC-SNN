@@ -56,7 +56,7 @@ parser.add_argument('-ce',
                     help='number of total epochs to run cloud model')
 parser.add_argument('-ee',
                     '--edge_epochs',
-                    default=70,
+                    default=70, # 200 for prepare
                     type=int,
                     metavar='N',
                     help='number of total epochs to run edge model')
@@ -221,14 +221,15 @@ else:
     trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
     testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-    if args.cloud in ('vit'):
+    if args.cloud in ('vit', 'resnet50'):
         model = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
     else:
         model = model_conf[args.cloud](num_classes, C, H, W, args.T)
     print(model)
 
-    for name, param in model.named_parameters():
-        print(f"{name}: {param.requires_grad}")
+    if args.dataset in ('imagenet'):
+        for name, param in model.named_parameters():
+            print(f"{name}: {param.requires_grad}")
         
     model.to(device)
 
@@ -254,7 +255,11 @@ else:
         for images, labels in tqdm(trainloader, unit='batch'):
             optimizer.zero_grad()
 
+            # if args.cloud == 'resnet50' and args.dataset == 'imagenet':
+            #     images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
+
             images, labels = images.to(device), labels.to(device)
+
             logits, _ = model(images)
             loss = criterion(logits, labels)
             loss.backward()
@@ -499,7 +504,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
 
         logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
-        if args.cloud in ('vit'):
+        if args.cloud in ('vit', 'resnet50'):
             c_net = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
         else:
             c_net = model_conf[args.cloud](num_classes, C, H, W, args.T)
@@ -526,6 +531,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 targets = targets.to(device)
 
                 # cloud infer
+                # if args.cloud == 'resnet50' and args.dataset == 'imagenet':
+                #     images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                 c_logit, c_feature = c_net(images)
                 # select those labels occured in current task, and convert them to new index
                 c_logit = c_logit[:, cloud_label_index] 
@@ -563,6 +570,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 total_c_acc = 0
                 net.eval()
                 for images, targets in tst_load[t]:
+                    # if args.cloud == 'resnet50' and args.dataset == 'imagenet':
+                    #     images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                     c_logit, _ = c_net(images.to(device))
                     c_logit = c_logit[:, cloud_label_index]
 

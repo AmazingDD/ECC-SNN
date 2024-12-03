@@ -1,4 +1,7 @@
+import torch
 import torch.nn as nn
+
+from timm.models import create_model
 
 class BasicBlock(nn.Module):
     """Basic Block for resnet 18 and resnet 34
@@ -143,6 +146,54 @@ class ResNet(nn.Module):
         # resnet only for cloud model in our study, the SNN-based resnet perform not very well with training from scratch
         return logit, None 
     
+
+class ResNet50(nn.Module):
+    def __init__(self, num_classes=100, C=3, H=32, W=32, T=4):
+        super().__init__()
+
+        try:
+            self.features = create_model('resnet50', pretrained=True)
+        except:
+            print('Fail to load model from HF hub')
+            self.features = create_model('resnet50', pretrained=False)
+            self.features.load_state_dict(torch.load('./resnet50.pt', map_location='cpu'))
+
+        for param in self.features.parameters():
+            param.requires_grad = False
+
+        self.classifier = nn.Linear(self.features.fc.in_features, num_classes)
+        self.T = T
+
+    def forward(self, x):  
+        logit, feature_transform = 0., 0.
+        if len(x.shape) == 5: # neuromorphic (B, T, C, H, W)
+            for ts in range(self.T):
+                a, b = self._forward(x[:, ts, ...]) 
+                logit += a
+                feature_transform += b
+
+            logit /= self.T
+            feature_transform /= self.T
+        elif len(x.shape) == 4: # static (B, C, H, W)
+            logit, feature_transform = self._forward(x)
+        else:
+            raise NotImplementedError(f'Invalid inputs shape: {x.shape}')
+        
+        return logit, feature_transform
+
+    def _forward(self, x):
+        # make sure this input only have dimension (B, C, H, W)
+        feature_transform = 0.
+        
+        features = self.features.forward_features(x) # (B, 2048, 7, 7)
+        
+        features = nn.functional.adaptive_avg_pool2d(features, (1, 1)) # (B, 2048, 1, 1)
+        features = features.view(features.size(0), -1) 
+
+        logit = self.classifier(features) # (B, cls)
+
+        return logit, feature_transform 
+    
 def resnet14(num_classes=100, C=3, H=32, W=32, T=4):
     return ResNet(BasicBlock, [1, 2, 2, 1], num_classes, C, H, W, T)
 
@@ -152,5 +203,8 @@ def resnet18(num_classes=100, C=3, H=32, W=32, T=4):
 def resnet34(num_classes=100, C=3, H=32, W=32, T=4):
     return ResNet(BasicBlock, [3, 4, 6, 3], num_classes, C, H, W, T)
 
-def resnet50(num_classes=100, C=3, H=32, W=32, T=4):
-    return ResNet(BottleNeck, [3, 4, 6, 3], num_classes, C, H, W, T)
+def resnet50(num_classes=100, C=3, H=32, W=32, T=4, pretrain=False):
+    if pretrain:
+        return ResNet50(num_classes, C, H, W, T)
+    else:
+        return ResNet(BottleNeck, [3, 4, 6, 3], num_classes, C, H, W, T)
