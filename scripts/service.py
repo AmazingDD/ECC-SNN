@@ -1,7 +1,12 @@
 import torch
 from flask import Flask, request, jsonify
 
-from models.vgg16 import VGG16
+from models.vgg import VGG16
+
+from models.vgg import VGG16
+from models.resnet import resnet34, resnet50
+from models.vit import VIT
+
 
 app = Flask(__name__)
 

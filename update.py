@@ -10,12 +10,21 @@ import torch.optim.lr_scheduler as lr_scheduler
 
 from utils import *
 from models.base import NetHead
-from models.vgg16 import VGG16
-from models.spikevgg9 import SpikeVGG9
+from models.vgg import VGG16
+from models.spikevgg import SpikeVGG9
+from models.resnet import *
+from models.spikeresnet import *
+from models.spikevit import SVIT
+from models.vit import VIT
 
 model_conf = {
-    'vgg16': VGG16,
-    'svgg9': SpikeVGG9
+    'vgg': VGG16,
+    'svgg': SpikeVGG9,
+    'resnet50': resnet50,
+    'resnet34': resnet34,
+    'svit': SVIT,
+    'vit': VIT,
+    'sresnet': resnet14,
 }
 
 def self_logit_distill(outputs, targets, temperature):

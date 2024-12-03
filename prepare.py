@@ -19,18 +19,21 @@ from spikingjelly.datasets.n_caltech101 import NCaltech101
 
 from utils import *
 from models.base import NetHead
-from models.vgg16 import VGG16
-from models.spikevgg9 import SpikeVGG9
-from models.resnet import resnet50
+from models.vgg import VGG16
+from models.spikevgg import SpikeVGG9
+from models.resnet import *
+from models.spikeresnet import *
 from models.spikevit import SVIT
 from models.vit import VIT
 
 model_conf = {
-    'vgg16': VGG16,
-    'svgg9': SpikeVGG9,
+    'vgg': VGG16,
+    'svgg': SpikeVGG9,
     'resnet50': resnet50,
+    'resnet34': resnet34,
     'svit': SVIT,
     'vit': VIT,
+    'sresnet': resnet14,
 }
 
 logger = Logger(name="prepare.py", log_file="prepare.log", level=logging.INFO).get_logger()
@@ -56,7 +59,7 @@ parser.add_argument('-ee',
                     help='number of total epochs to run edge model')
 parser.add_argument('-patience', 
                     '--lr-patience', 
-                    default=10, 
+                    default=40, 
                     type=int, 
                     required=False,
                     help='Maximum patience to wait before decreasing learning rate')
@@ -87,11 +90,11 @@ parser.add_argument('-dataset',
                     type=str,
                     help='dataset name')
 parser.add_argument('-cloud',
-                    default='vit', # vgg16
+                    default='vit', # vgg
                     type=str,
                     help='cloud model name')
 parser.add_argument('-edge',
-                    default='svit', # svgg9
+                    default='svit', # svgg
                     type=str,
                     help='edge model name')
 parser.add_argument('-base', 
@@ -539,7 +542,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 loss += args.l1 * loss_logit
 
                 # feature loss if overlapping case
-                if (args.cloud == 'vgg16' and args.edge == 'svgg9'):
+                if (args.cloud == 'vgg' and args.edge == 'svgg'):
                     loss_align = nn.functional.mse_loss(e_feature, c_feature)
                     loss += args.l2 * loss_align
 

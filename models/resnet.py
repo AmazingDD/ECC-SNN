@@ -4,11 +4,6 @@ class BasicBlock(nn.Module):
     """Basic Block for resnet 18 and resnet 34
 
     """
-
-    #BasicBlock and BottleNeck block
-    #have different output size
-    #we use class attribute expansion
-    #to distinct
     expansion = 1
 
     def __init__(self, in_channels, out_channels, stride=1):
@@ -147,18 +142,15 @@ class ResNet(nn.Module):
 
         # resnet only for cloud model in our study, the SNN-based resnet perform not very well with training from scratch
         return logit, None 
+    
+def resnet14(num_classes=100, C=3, H=32, W=32, T=4):
+    return ResNet(BasicBlock, [1, 2, 2, 1], num_classes, C, H, W, T)
 
 def resnet18(num_classes=100, C=3, H=32, W=32, T=4):
-    """ return a ResNet 18 object
-    """
     return ResNet(BasicBlock, [2, 2, 2, 2], num_classes, C, H, W, T)
 
 def resnet34(num_classes=100, C=3, H=32, W=32, T=4):
-    """ return a ResNet 34 object
-    """
     return ResNet(BasicBlock, [3, 4, 6, 3], num_classes, C, H, W, T)
 
 def resnet50(num_classes=100, C=3, H=32, W=32, T=4):
-    """ return a ResNet 50 object
-    """
     return ResNet(BottleNeck, [3, 4, 6, 3], num_classes, C, H, W, T)
