@@ -17,7 +17,7 @@ class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None, connect_f='AND'):
+                 base_width=64, dilation=1, norm_layer=None, connect_f='ADD'):
         super(BasicBlock, self).__init__()
         self.connect_f = connect_f
         if norm_layer is None:
@@ -65,7 +65,7 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None, connect_f='AND'):
+                 base_width=64, dilation=1, norm_layer=None, connect_f='ADD'):
         super(Bottleneck, self).__init__()
         self.connect_f = connect_f
         if norm_layer is None:
@@ -115,22 +115,10 @@ class Bottleneck(nn.Module):
 
         return out
 
-def zero_init_blocks(net: nn.Module, connect_f: str):
-    for m in net.modules():
-        if isinstance(m, Bottleneck):
-            nn.init.constant_(m.conv3.module[1].weight, 0)
-            if connect_f == 'AND':
-                nn.init.constant_(m.conv3.module[1].bias, 1)
-        elif isinstance(m, BasicBlock):
-            nn.init.constant_(m.conv2.module[1].weight, 0)
-            if connect_f == 'AND':
-                nn.init.constant_(m.conv2.module[1].bias, 1)
-
-
 class SEWResNet(nn.Module):
     def __init__(self, block, layers, num_classes=1000, C=3, H=48, W=48, T=4, 
                  zero_init_residual=False, groups=1, width_per_group=64, 
-                 replace_stride_with_dilation=None, norm_layer=None, connect_f='AND'):
+                 replace_stride_with_dilation=None, norm_layer=None, connect_f='ADD'):
         super(SEWResNet, self).__init__()
         self.T = T
         self.connect_f = connect_f
@@ -178,12 +166,9 @@ class SEWResNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-        if zero_init_residual:
-            zero_init_blocks(self, connect_f)
-
         functional.set_step_mode(self, 'm')
 
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, connect_f='AND'):
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, connect_f='ADD'):
         norm_layer = self._norm_layer
         downsample = None
         previous_dilation = self.dilation
