@@ -33,7 +33,8 @@ model_conf = {
     'resnet34': resnet34,
     'svit': SVIT,
     'vit': VIT,
-    'sresnet': resnet14,
+    'sresnet14': sew_resnet14,
+    'sresnet18': sew_resnet18,
 }
 
 logger = Logger(
@@ -511,7 +512,10 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         c_net.eval()
         logger.info('cloud model loaded successfully...')
 
-        optimizer = optim.Adam(list(net.parameters()), lr=1e-3, weight_decay=5e-4)
+        if 'sresnet' in args.edge:
+             optimizer = optim.SGD(net.parameters(), lr=0.1, weight_decay=5e-4)
+        else:
+            optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
         

@@ -17,7 +17,7 @@ class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None, connect_f=None):
+                 base_width=64, dilation=1, norm_layer=None, connect_f='AND'):
         super(BasicBlock, self).__init__()
         self.connect_f = connect_f
         if norm_layer is None:
@@ -65,7 +65,7 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None, connect_f=None):
+                 base_width=64, dilation=1, norm_layer=None, connect_f='AND'):
         super(Bottleneck, self).__init__()
         self.connect_f = connect_f
         if norm_layer is None:
@@ -130,7 +130,7 @@ def zero_init_blocks(net: nn.Module, connect_f: str):
 class SEWResNet(nn.Module):
     def __init__(self, block, layers, num_classes=1000, C=3, H=48, W=48, T=4, 
                  zero_init_residual=False, groups=1, width_per_group=64, 
-                 replace_stride_with_dilation=None, norm_layer=None, connect_f=None):
+                 replace_stride_with_dilation=None, norm_layer=None, connect_f='AND'):
         super(SEWResNet, self).__init__()
         self.T = T
         self.connect_f = connect_f
@@ -181,9 +181,9 @@ class SEWResNet(nn.Module):
         if zero_init_residual:
             zero_init_blocks(self, connect_f)
 
-        functional.set_step_mode('m')
+        functional.set_step_mode(self, 'm')
 
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, connect_f=None):
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, connect_f='AND'):
         norm_layer = self._norm_layer
         downsample = None
         previous_dilation = self.dilation
@@ -209,6 +209,7 @@ class SEWResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _forward_impl(self, x):
+        feature_transform = 0.
         # (T, B, C, H, W)
         x = self.conv1(x)
         x = self.bn1(x)
@@ -224,7 +225,7 @@ class SEWResNet(nn.Module):
         x = torch.flatten(x, 2)
         x = x.mean(0)
 
-        return self.classifier(x) # (B, num_cls)
+        return x, feature_transform
 
     def forward(self, x):
         functional.reset_net(self)
@@ -236,7 +237,10 @@ class SEWResNet(nn.Module):
         else:
             raise NotImplementedError(f'Invalid inputs shape: {x.shape}')
 
-        return self._forward_impl(x)
+        x, feature_transform = self._forward_impl(x)
+        x = self.classifier(x) # (B, num_cls)
+
+        return x, feature_transform
 
 
 def _sew_resnet(block, layers, num_classes, C, H, W, T, **kwargs):
