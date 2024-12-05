@@ -141,8 +141,6 @@ class ResNet(nn.Module):
         else:
             raise NotImplementedError(f'Invalid inputs shape: {x.shape}')
 
-        self._forward(x)
-
         # resnet only for cloud model in our study, the SNN-based resnet perform not very well with training from scratch
         return logit, None 
 

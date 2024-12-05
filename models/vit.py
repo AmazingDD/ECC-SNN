@@ -2,6 +2,49 @@ import torch
 import torch.nn as nn
 
 from timm.models import create_model
+from timm.models.vision_transformer import VisionTransformer
+
+class VIT4(nn.Module):
+    def __init__(self, num_classes=200, C=3, H=224, W=224, T=4):
+        super().__init__()
+        self.T = T
+        self.vit = VisionTransformer(
+            img_size=(H, W),
+            patch_size=16,
+            embed_dim=192,
+            depth=4, 
+            num_heads=3, 
+            mlp_ratio=4,
+            num_classes=num_classes,
+        )
+
+    def forward(self, x):  
+        logit, feature_transform = 0., 0.
+        if len(x.shape) == 5: # neuromorphic (B, T, C, H, W)
+            for ts in range(self.T):
+                a, b = self._forward(x[:, ts, ...]) 
+                logit += a
+                feature_transform += b
+
+            logit /= self.T
+            feature_transform /= self.T
+        elif len(x.shape) == 4: # static (B, C, H, W)
+            logit, feature_transform = self._forward(x)
+        else:
+            raise NotImplementedError(f'Invalid inputs shape: {x.shape}')
+        
+        return logit, feature_transform
+
+    def _forward(self, x):
+        # make sure this input only have dimension (B, C, H, W)
+        feature_transform = 0.
+        
+        features = self.vit.forward_features(x) # (B, patch_num + 1, D)
+        cls_token_features = features[:, 0, :] # (B, D)
+
+        logit = self.classifier(cls_token_features) # (B, cls)
+
+        return logit, feature_transform 
 
 class VIT(nn.Module):
     def __init__(self, num_classes=200, C=3, H=224, W=224, T=4, pretrain=True):
@@ -18,6 +61,7 @@ class VIT(nn.Module):
 
             for param in self.vit.parameters():
                 param.requires_grad = False
+
         else:
             # for other dataset like cifar100, and dvs image, since they are small, we can train from scratch
             self.vit = create_model('vit_base_patch16_224', pretrained=False, drop_path_rate=0.1)
@@ -28,7 +72,6 @@ class VIT(nn.Module):
             num_patches = (H // patch_size) * (W // patch_size)
             self.vit.patch_embed.num_patches = num_patches
             self.vit.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, self.vit.embed_dim))
-
 
         self.classifier = nn.Linear(self.vit.embed_dim, num_classes)
         self.T = T
