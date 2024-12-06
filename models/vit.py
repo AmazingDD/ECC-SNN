@@ -18,6 +18,16 @@ class VIT4(nn.Module):
             num_classes=num_classes,
         )
 
+        self.vit.patch_embed.img_size = (H, W)
+        patch_size = 16
+        self.vit.patch_embed.proj = nn.Conv2d(C, self.vit.embed_dim, kernel_size=(patch_size, patch_size), stride=(patch_size, patch_size), padding=0)
+        num_patches = (H // patch_size) * (W // patch_size)
+        self.vit.patch_embed.num_patches = num_patches
+        self.vit.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, self.vit.embed_dim))
+
+        self.classifier = nn.Linear(self.vit.embed_dim, num_classes)
+        self.T = T
+
     def forward(self, x):  
         logit, feature_transform = 0., 0.
         if len(x.shape) == 5: # neuromorphic (B, T, C, H, W)
