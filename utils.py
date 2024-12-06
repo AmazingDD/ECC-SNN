@@ -75,8 +75,11 @@ class BaseDataset(Dataset):
 
     def __getitem__(self, index):
         """Generates one sample of data"""
-        x = Image.fromarray(self.images[index])
-        x = self.transform(x)
+        x = self.images[index] # (T, C, H, W) or (C, H, W)
+        # static image nee transform, neuromorphic input have already been processed by spikingjelly
+        if len(x.shape) == 3: 
+            x = Image.fromarray(x)
+            x = self.transform(x)
         y = self.labels[index]
         return x, y
 
@@ -112,35 +115,32 @@ class DVSCifar10(Dataset):
     def __init__(self, root, train=True, transform=None):
         super().__init__()
 
-        self.root = root
         self.transform = transform
         self.train = train
 
-        self.resize = transforms.Resize(size=(48, 48), interpolation=transforms.InterpolationMode.NEAREST)
-        self.rotate = transforms.RandomRotation(degrees=30)
-        self.shearx = transforms.RandomAffine(degrees=0, shear=(-30, 30))
+        data, targets = [], []
+        self.root = os.path.join(root, 'train') if self.train else os.path.join(root, 'test')
+
+        for f in os.listdir(self.root):
+            d, t = torch.load(os.path.join(self.root, f)) # (C, H, W, T)
+            d = d.permute([3, 0, 1, 2]) # (T, C, H, W)
+            if self.transform:
+                d = self.transform(d) # resize to new_H, new_w, (T, C, new_H, new_w)
+            data.append(d) 
+            targets.append(t)
+
+        self.data = torch.stack(data, dim=0) # (B, T, C, H, W)
+        self.targets = torch.cat(targets) # (B)
+        self.targets = self.targets.long()
 
     def __getitem__(self, index):
-        data, target = torch.load(f'{self.root}/{index}.pt')
-        data = self.resize(data.permute([3, 0, 1, 2]))
+        data = self.data[index]
+        target = self.targets[index]
 
-        if self.transform:
-            choices = ['roll', 'rotate', 'shear']
-            aug = np.random.choice(choices)
-
-            if aug == 'roll':
-                off1 = random.randint(-5, 5)
-                off2 = random.randint(-5, 5)
-                data = torch.roll(data, shifts=(off1, off2), dims=(2, 3))
-            if aug == 'rotate':
-                data = self.rotate(data)
-            if aug == 'shear':
-                data = self.shearx(data)
-
-        return data, target.long().squeeze(-1)
+        return data, target
     
     def __len__(self):
-        return len(os.listdir(self.root))
+        return len(self.targets) # len(os.listdir(self.root))
 
 class NCaltech(Dataset):
     def __init__(self, data_path='data/n-caltech/frames_number_10_split_by_number', data_type='train', transform=False):
