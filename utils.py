@@ -143,67 +143,54 @@ class DVSCifar10(Dataset):
         return len(self.targets) # len(os.listdir(self.root))
 
 class NCaltech(Dataset):
-    def __init__(self, data_path='data/n-caltech/frames_number_10_split_by_number', data_type='train', transform=False):
+    def __init__(self, data_path='./ncaltech/frames_number_10_split_by_time', data_type='train', transform=None):
         super().__init__()
-
+        
         self.filepath = os.path.join(data_path)
         self.clslist = os.listdir(self.filepath)
         self.clslist.sort()
 
-        self.dvs_filelist = []
-        self.targets = []
-        self.resize = transforms.Resize(size=(48, 48), interpolation=transforms.InterpolationMode.NEAREST)
+        self.data = [] # (B, T, C, H, W)
+        self.targets = [] # (B)
+        self.transform = transform
 
         for i, c in enumerate(self.clslist):
-            # print(i, c)
+            print(i, c)
             file_list = os.listdir(os.path.join(self.filepath, c))
             num_file = len(file_list)
-
-            cut_idx = int(num_file * 0.9)
+            cut_idx = int(num_file * 0.9) # 90% for train 10% for test
             train_file_list = file_list[:cut_idx]
             test_split_list = file_list[cut_idx:]
+
             for f in file_list:
                 if data_type == 'train':
                     if f in train_file_list:
-                        self.dvs_filelist.append(os.path.join(self.filepath, c, f))
-                        self.targets.append(i)
-                    else:
-                        if f in test_split_list:
-                            self.dvs_filelist.append(os.path.join(self.filepath, c, f))
-                            self.targets.append(i)
-        
-        self.data_num = len(self.dvs_filelist)
-        self.data_type = data_type
-        if data_type != 'train':
-            counts = np.unique(np.array(self.targets), return_counts=True)[1]
-            class_weights = counts.sum() / (counts * len(counts))
-            self.class_weights = torch.Tensor(class_weights)
+                        frame = np.load(os.path.join(self.filepath, c, f))['frames'] # (T, C, H, W)
+                        frame = torch.from_numpy(frame).float()
+                        if self.transform:
+                            frame = self.transform(frame) # (T, C, new_H, new_W)
 
-        self.classes = range(101)
-        self.transform = transform
-        self.rotate = transforms.RandomRotation(degrees=15)
-        self.shearx = transforms.RandomAffine(degrees=0, shear=(-15, 15))
+                        self.data.append(frame)
+                        self.targets.append(i)
+                else:
+                    if f in test_split_list:
+                        frame = np.load(os.path.join(self.filepath, c, f))['frames']
+                        frame = torch.from_numpy(frame).float()
+                        if self.transform:
+                            frame = self.transform(frame)
+
+                        self.data.append(frame)
+                        self.targets.append(i)
+
+        self.data = torch.stack(self.data, dim=0) # (B, T, C, H, W)
+        self.targets = torch.tensor(self.targets) # (B)
+        self.targets = self.targets.long()
 
     def __getitem__(self, index):
-        file_pth = self.dvs_filelist[index]
+        data = self.data[index]
         label = self.targets[index]
-        data = torch.from_numpy(np.load(file_pth)['frames']).float()
-        data = self.resize(data)
-
-        if self.transform:
-
-            choices = ['roll', 'rotate', 'shear']
-            aug = np.random.choice(choices)
-            if aug == 'roll':
-                off1 = random.randint(-3, 3)
-                off2 = random.randint(-3, 3)
-                data = torch.roll(data, shifts=(off1, off2), dims=(2, 3))
-            if aug == 'rotate':
-                data = self.rotate(data)
-            if aug == 'shear':
-                data = self.shearx(data)
 
         return data, label
 
     def __len__(self):
-        return self.data_num
+        return len(self.targets)
