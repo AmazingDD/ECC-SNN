@@ -8,7 +8,8 @@ class Transform(nn.Module):
         self.bn = layer.BatchNorm2d(dim)
         
     def forward(self, x):
-        return self.bn(self.conv(x))
+        x = self.bn(self.conv(x))
+        return nn.functional.adaptive_avg_pool2d(x, (1, 1)) # (B, C, 1, 1)
 
 class SpikeVGG9(nn.Module):
     def __init__(self, num_classes, C=3, H=32, W=32, T=4):

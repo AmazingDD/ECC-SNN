@@ -232,6 +232,9 @@ def _sew_resnet(block, layers, num_classes, C, H, W, T, **kwargs):
     model = SEWResNet(block, layers, num_classes, C, H, W, T, **kwargs)
     return model
 
+def sew_resnet10(num_classes=100, C=3, H=32, W=32, T=4, **kwargs):
+    return _sew_resnet(BasicBlock, [1, 1, 1, 1], num_classes, C, H, W, T, **kwargs)
+
 def sew_resnet14(num_classes=100, C=3, H=32, W=32, T=4, **kwargs):
     return _sew_resnet(BasicBlock, [1, 2, 2, 1], num_classes, C, H, W, T, **kwargs)
 

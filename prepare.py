@@ -23,7 +23,7 @@ from models.spikevgg import SpikeVGG9
 from models.resnet import *
 from models.spikeresnet import *
 from models.spikevit import SVIT
-from models.vit import VIT
+from models.vit import *
 
 model_conf = {
     'vgg': VGG16,
@@ -32,8 +32,10 @@ model_conf = {
     'resnet34': resnet34,
     'svit': SVIT,
     'vit': VIT,
-    'sresnet14': sew_resnet14,
+    'sresnet34': sew_resnet34,
     'sresnet18': sew_resnet18,
+    'sresnet10': sew_resnet10,
+    'vit4': VIT4,
 }
 
 logger = Logger(
@@ -79,7 +81,7 @@ parser.add_argument('-seed',
                     help='seed for initializing training.')
 parser.add_argument('-gpu',
                     '--gpu_id',
-                    default=0,
+                    default=6,
                     type=int,
                     help='GPU ID to use')
 parser.add_argument('-T',
@@ -207,7 +209,7 @@ elif args.dataset == 'cifardvs':
     num_classes = 10
     C, H, W = 2, 48, 48 # T = 10, S-VGG
 elif args.dataset == 'ncaltech':
-    NCaltech101(root='data', data_type='frame', frames_number=args.T, split_by='time')
+    NCaltech101(root='./ncaltech', data_type='frame', frames_number=args.T, split_by='time')
     train_set = NCaltech(transform=True)
     test_set = NCaltech(data_type='test', transform=False)
     num_classes = 101
@@ -227,7 +229,7 @@ else:
     trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
     testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-    if args.cloud in ('vit', 'resnet50', 'resnet34'):
+    if args.cloud in ('vit', 'resnet50', 'resnet34') or args.pretrain:
         model = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
     else:
         model = model_conf[args.cloud](num_classes, C, H, W, args.T)
@@ -247,8 +249,14 @@ else:
         # fine-tune
         optimizer = optim.AdamW(model.classifier.parameters(), lr=1e-3, weight_decay=0.05)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=math.ceil(len(trainloader) / 2) * args.cloud_epochs)
-    elif args.cloud in ('vit') and not args.pretrain:
-        optimizer = optim.AdamW(model.classifier.parameters(), lr=5e-3, weight_decay=0.05)
+    elif args.cloud in ('vit', 'vit4') and not args.pretrain:
+        optimizer = optim.AdamW(model.classifier.parameters(), lr=5e-4, weight_decay=0.05)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
+    elif args.cloud in ('svgg', 'svit4'):
+        optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
+    elif args.cloud in ('sresnet34'):
+        optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
     else:
         optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
@@ -520,7 +528,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
 
         logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
-        if args.cloud in ('vit', 'resnet50', 'resnet34'):
+        if args.cloud in ('vit', 'resnet50', 'resnet34') or args.pretrain:
             c_net = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
         else:
             c_net = model_conf[args.cloud](num_classes, C, H, W, args.T)
