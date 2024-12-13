@@ -5,8 +5,10 @@ import logging
 import datetime
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 import torch
+import torchvision
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 
@@ -75,13 +77,92 @@ class BaseDataset(Dataset):
 
     def __getitem__(self, index):
         """Generates one sample of data"""
-        x = self.images[index] # (T, C, H, W) or (C, H, W)
+        x = self.images[index] # (C, H, W) or str
         # static image nee transform, neuromorphic input have already been processed by spikingjelly
-        if len(x.shape) == 3: 
+        if isinstance(x, str): # image root, load rgb image
+            x = Image.open(x)
+            x = x.convert("RGB")
+            x = self.transform(x)
+        else: # (C, H, W) numpy
             x = Image.fromarray(x)
             x = self.transform(x)
+
         y = self.labels[index]
         return x, y
+
+
+class CaltechDataset(Dataset):
+    def __init__(self, root='.', train=True, transform=None):
+        super().__init__()
+
+        dset = torchvision.datasets.Caltech101(root='.', download=True)
+        self.data = []
+        self.targets = []
+        resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
+        for x, y in tqdm(dset):
+            x = x.convert("RGB")
+            x = resize(x)
+            x = np.array(x)
+
+            self.data.append(x)
+            self.targets.append(y)
+
+        self.data = np.array(self.data)
+        self.targets = np.array(self.targets)
+
+        self.transform = transform
+        
+    def __len__(self):
+        return len(self.targets)
+    
+    def __getitem__(self, index):
+        x = self.data[index]
+        if self.transform:
+            x = Image.fromarray(x)
+            x = self.transform(x)
+        
+        return x, self.targets[index]
+
+class CUBDataset(Dataset):
+    def __init__(self, root='./cub200', train=True, transform=None):
+        super().__init__()
+
+        if transform is None:
+            self.transform = transforms.Compose([
+                transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+            ])
+        else:
+            self.transform = transform
+        
+        if train:
+            dset_dir = os.path.join(root, 'train')
+        else:
+            dset_dir = os.path.join(root, 'test')
+        dset = torchvision.datasets.ImageFolder(dset_dir)
+
+        self.data, self.targets = self.split_images_labels(dset.imgs)
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, index):
+        img_dir = self.data[index]
+        x = Image.open(img_dir)
+        x = x.convert("RGB")
+        if self.transform:
+            x = self.transform(x)
+
+        return x, self.targets[index]
+
+    def split_images_labels(self, imgs):
+        images, labels = [], []
+        for item in imgs:
+            images.append(item[0])
+            labels.append(item[1])
+        
+        return np.array(images), np.array(labels)
 
 class TinyImageNetDataset(Dataset):
     def __init__(self, root='./tiny-imagenet-200', train=True, transform=None):

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
 
-from spikingjelly.datasets.n_caltech101 import NCaltech101
+from spikingjelly.datasets import split_to_train_test_set
 
 from utils import *
 from models.base import NetHead
@@ -128,7 +128,7 @@ parser.add_argument('-l1',
                     help='logit distillation intensity')
 parser.add_argument('-l2',
                     type=float,
-                    default=0.2,
+                    default=0.,
                     help='feature distillation intensity')
 parser.add_argument('-temperature', 
                     type=float, 
@@ -178,6 +178,28 @@ elif args.dataset == 'cifar100':
     num_classes = 100
     C, H, W = 3, 32, 32
 
+elif args.dataset == 'caltech':
+    transform_train = transforms.Compose([
+        # transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.RandomHorizontalFlip(), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    ])
+
+    transform_test = transforms.Compose([
+        # transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.RandomHorizontalFlip(), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    ])
+
+    dset = CaltechDataset(root='.', transform=transform_train)
+    
+    num_classes = 101
+    C, H, W = 3, 224, 224
+
+    train_set, test_set = split_to_train_test_set(0.8, dset, num_classes)
+
 elif args.dataset == 'imagenet':
     transform_train = transforms.Compose([
         transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
@@ -196,24 +218,6 @@ elif args.dataset == 'imagenet':
 
     train_set = TinyImageNetDataset('./tiny-imagenet-200', train=True, transform=transform_train)
     test_set = TinyImageNetDataset('./tiny-imagenet-200', train=False, transform=transform_test)
-
-elif args.dataset == 'cifardvs':
-    transform_train = transforms.Compose([
-        transforms.Resize(size=(48, 48), interpolation=transforms.InterpolationMode.NEAREST)
-    ])
-    transform_test = transforms.Compose([
-        transforms.Resize(size=(48, 48), interpolation=transforms.InterpolationMode.NEAREST)
-    ])
-    train_set = DVSCifar10(root='./cifar-dvs', train=True, transform=transform_train)
-    test_set = DVSCifar10(root='./cifar-dvs', train=False, transform=transform_test)
-    num_classes = 10
-    C, H, W = 2, 48, 48 # T = 10, S-VGG
-elif args.dataset == 'ncaltech':
-    NCaltech101(root='./ncaltech', data_type='frame', frames_number=args.T, split_by='time')
-    train_set = NCaltech(transform=True)
-    test_set = NCaltech(data_type='test', transform=False)
-    num_classes = 101
-    C, H, W = 2, 48, 48 # T = 10
 else:
     raise NotImplementedError(f'Invalid dataset name: {args.dataset}')
 
@@ -229,36 +233,29 @@ else:
     trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
     testloader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
-    if args.cloud in ('vit', 'resnet50', 'resnet34') or args.pretrain:
+    if args.pretrain: # args.cloud in ('vit', 'vgg', 'resnet34')
         model = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
     else:
         model = model_conf[args.cloud](num_classes, C, H, W, args.T)
     print(model)
 
-    if args.dataset in ('imagenet'):
-        for name, param in model.named_parameters():
-            print(f"{name}: {param.requires_grad}")
-        
     model.to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if hasattr(p, 'requires_grad'))
     logger.info(f"number of params for cloud model: {n_parameters}")
 
     criterion = nn.CrossEntropyLoss()
-    if args.cloud in ('vit', 'resnet50', 'resnet34') and args.pretrain:
+
+    if args.pretrain:
         # fine-tune
         optimizer = optim.AdamW(model.classifier.parameters(), lr=1e-3, weight_decay=0.05)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=math.ceil(len(trainloader) / 2) * args.cloud_epochs)
     elif args.cloud in ('vit', 'vit4') and not args.pretrain:
+        # vit from scratch is special
         optimizer = optim.AdamW(model.classifier.parameters(), lr=5e-4, weight_decay=0.05)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
-    elif args.cloud in ('svgg', 'svit4'):
-        optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
-    elif args.cloud in ('sresnet34'):
-        optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.cloud_epochs)
-    else:
+    else: 
+        # training from scratch
         optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=5e-4, momentum=0.9)
         scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[60, 120, 160], gamma=0.2)
 
@@ -271,7 +268,7 @@ else:
 
             images, labels = images.to(device), labels.to(device)
 
-            if 'cifar' in args.dataset and args.cloud in ('vit'):
+            if args.pretrain: # all pretrain model input size is 3*224*224
                 images = nn.functional.interpolate(images, size=(224, 224), mode='bilinear', align_corners=False)
 
             logits, _ = model(images)
@@ -290,7 +287,7 @@ else:
             for images, labels in testloader:
                 images, labels = images.to(device), labels.to(device)
 
-                if 'cifar' in args.dataset and args.cloud in ('vit'):
+                if args.pretrain: # all pretrain model input size is 3*224*224
                     images = nn.functional.interpolate(images, size=(224, 224), mode='bilinear', align_corners=False)
 
                 logits, _ = model(images)
@@ -311,21 +308,20 @@ else:
 #########################################################################################
 ####################### prepare incremental scenario for edge SNN #######################
 #########################################################################################
-if 'mnist' in args.dataset:
-    trn_data = {'x': train_set.data.numpy(), 'y': train_set.targets.tolist()}
-    tst_data = {'x': test_set.data.numpy(), 'y': test_set.targets.tolist()}
-elif 'cifar10' in args.dataset:
+
+if 'cifar10' in args.dataset: # cifar10, cifar100 need the same process method
     trn_data = {'x': train_set.data, 'y': train_set.targets}
     tst_data = {'x': test_set.data, 'y': test_set.targets}
 elif 'imagenet' in args.dataset:
     trn_data = {'x': train_set.data.permute(0, 2, 3, 1).numpy(), 'y': train_set.targets.tolist()} 
     tst_data = {'x': test_set.data.permute(0, 2, 3, 1).numpy(), 'y': test_set.targets.tolist()}
-elif 'cifardvs' in args.dataset:
-    trn_data = {'x': train_set.data, 'y': train_set.targets.tolist()} 
-    tst_data = {'x': test_set.data, 'y': test_set.targets.tolist()}
+elif 'caltech' in args.dataset:
+    train_idx = train_set.indices
+    test_idx = test_set.indices
+    trn_data = {'x': train_set.dataset.data[train_idx], 'y': train_set.dataset.targets[train_idx].tolist()} 
+    tst_data = {'x': test_set.dataset.data[test_idx], 'y': test_set.dataset.targets[test_idx].tolist()}
 else:
     raise ValueError(f'the selected dataset {args.dataset} is to be added')
-
 
 data = {}
 taskcla = [] # record each task contains how many labels
@@ -333,14 +329,27 @@ taskcla = [] # record each task contains how many labels
 num_tasks = args.num_tasks
 nc_first_task = args.nc_first_task
 
-class_order = list(range(num_classes))
-np.random.shuffle(class_order)
+if args.dataset == 'caltech':
+    # sort by frequency
+    class_order = [  5,   3,   0,   1,  94,   2,  12,  19,  55,  23,  47,  46,  13,
+                    16,  50,  63,  54,  86,  92,  15,  39,  90,  81,  75,  57,  51,
+                    58,  65,  35,  93,  26,  27,  25,  34,  31,  40,  41,  60,  33,
+                    36,  38,  53,  84,  88,  79,  22,  56, 100,  21,  76,  87,  96,
+                    30,  74,  82,  98,   4,  66,   9,  49,  37,  72,  32,  29,  45,
+                    17,  28,  77,  91,   8,  20,  24,  69,  10,  42,  71,  85,  14,
+                    18,  61,   6,   7,  48,  59,  62,  78,  68,  80,  99,  70,  95,
+                    67,  83,  89,  43,  44,  73,  97,  11,  64,  52]
+else:
+    class_order = list(range(num_classes))
+    np.random.shuffle(class_order)
 
-if nc_first_task == 0: # no number of classes is assigned for base task 0, labels are evenly divided by num_tasks
+if nc_first_task == 0: 
+    # no number of classes is assigned for base task 0, labels are evenly divided by num_tasks
     cpertask = np.array([num_classes // num_tasks] * num_tasks)
     for i in range(num_classes % num_tasks):
         cpertask[i] += 1
-else: # remaining labels are evenly divided by (num_tasks - 1)
+else: 
+    # remaining labels are evenly divided by (num_tasks - 1)
     assert nc_first_task < num_classes, "first task wants more classes than exist"
     remaining_classes = num_classes - nc_first_task
     assert remaining_classes >= (num_tasks - 1), "at least one class is needed per task"
@@ -425,9 +434,11 @@ for tt in range(num_tasks):
                                 num_workers=args.workers, 
                                 pin_memory=True))
 if args.dataset in ('imagenet'):
+    # our GPU memory is limited, for SNN model with T=4, it cannot handle 224 input size
     init_model = model_conf[args.edge](num_classes, C, 64, 64, T=args.T)
 else:
     init_model = model_conf[args.edge](num_classes, C, H, W, T=args.T)
+
 # base edge SNN
 seed_all(args.seed)
 net = NetHead(init_model)
@@ -452,8 +463,10 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         logger.info('Directly training edge SNN')
 
         if 'sresnet' in args.edge and args.dataset in ('imagenet'):
-             optimizer = optim.SGD(net.parameters(), lr=0.1)
+            # sew-resnet default optimizer
+            optimizer = optim.SGD(net.parameters(), lr=0.1)
         else:
+            # common SNN optimizer
             optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
@@ -528,7 +541,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
 
         logger.info('Training edge SNN assisted by cloud ANN distillation')
         # init cloud model with pre-trained weight, then remove head and finetune for new base task
-        if args.cloud in ('vit', 'resnet50', 'resnet34') or args.pretrain:
+        if args.pretrain:
             c_net = model_conf[args.cloud](num_classes, C, H, W, args.T, args.pretrain)
         else:
             c_net = model_conf[args.cloud](num_classes, C, H, W, args.T)
@@ -539,8 +552,10 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
         logger.info('cloud model loaded successfully...')
 
         if 'sresnet' in args.edge and args.dataset in ('imagenet'):
-             optimizer = optim.SGD(net.parameters(), lr=0.1)
+            # sew-resnet default optimizer
+            optimizer = optim.SGD(net.parameters(), lr=0.1)
         else:
+            # SNN default optimizer
             optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=5e-4)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
@@ -558,7 +573,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 targets = targets.to(device)
 
                 # cloud infer
-                if 'cifar' in args.dataset and args.cloud in ('vit'):
+                if args.pretrain:
                     c_logit, c_feature = c_net(nn.functional.interpolate(images, size=(224, 224), mode='bilinear', align_corners=False))
                 else:
                     c_logit, c_feature = c_net(images)
@@ -588,6 +603,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 loss.backward()
                 nn.utils.clip_grad_norm_(net.parameters(), 10000)
                 optimizer.step()
+
             scheduler.step()
             clock1 = time.time()
             line = f'Epoch {e + 1:3d}, train time={clock1 - clock0:5.1f}s, '
@@ -598,12 +614,14 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n, but only task 0 in prepare 
                 total_c_acc = 0
                 net.eval()
                 for images, targets in tst_load[t]:
-                    if 'cifar' in args.dataset and args.cloud in ('vit'):
+                    # cloud infer
+                    if args.pretrain:
                         c_logit, c_feature = c_net(nn.functional.interpolate(images.to(device), size=(224, 224), mode='bilinear', align_corners=False))
                     else:
                         c_logit, _ = c_net(images.to(device))
                     c_logit = c_logit[:, cloud_label_index]
 
+                    # edge infer
                     if args.dataset in ('imagenet'):
                         images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                     outputs, _ = net(images.to(device))
