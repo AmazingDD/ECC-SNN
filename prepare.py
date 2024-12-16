@@ -118,7 +118,7 @@ parser.add_argument('-fix-bn',
                     help='Fix batch normalization after first task')
 parser.add_argument('-pretrain', 
                     action='store_true',
-                    help='using pretrained vit model for imagenet')
+                    help='using pretrained model for imagenet')
 parser.add_argument('-distill', 
                     action='store_true', 
                     help='train edge with distillation or directly')
