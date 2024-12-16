@@ -58,7 +58,7 @@ parser.add_argument('-ce',
                     help='number of total epochs to run cloud model')
 parser.add_argument('-ee',
                     '--edge_epochs',
-                    default=70, # 200 for prepare
+                    default=200, 
                     type=int,
                     metavar='N',
                     help='number of total epochs to run edge model')
@@ -99,7 +99,7 @@ parser.add_argument('-cloud',
                     type=str,
                     help='cloud model name')
 parser.add_argument('-edge',
-                    default='svit', # svgg
+                    default='svgg', # svgg
                     type=str,
                     help='edge model name')
 parser.add_argument('-base', 
