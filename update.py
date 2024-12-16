@@ -31,7 +31,7 @@ def self_logit_distill(outputs, targets, temperature):
         """self-distillation with temperature scaling"""
         new_soft_logits = nn.functional.log_softmax(outputs / temperature, dim=1)
         old_soft_logits = nn.functional.softmax(targets / temperature, dim=1)
-        l_old = nn.functional.kl_div(new_soft_logits, old_soft_logits, reduction='batchmean') * (t ** 2)
+        l_old = nn.functional.kl_div(new_soft_logits, old_soft_logits, reduction='batchmean') * (temperature ** 2)
 
         return l_old
 
