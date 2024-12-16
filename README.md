@@ -3,19 +3,13 @@ Official code for "ECC-SNN: " (XXX2025)
 
 ## How to run
 
-### Setup Stage: run `prepare.py`
+### Setup Stage:
 
-- overlapping setup example
-    ```
-    python prepare.py -dataset=cifar100 -nt=5 -b=32 -edge=svgg -cloud=vgg -ce=150 -ee=200 -distill
-    ```
+```
+python prepare.py -nt=5 -patience=50 -b=64 -ce=30 -ee=200 -cloud=vit -edge=svgg -dataset=cifar100 -T=4 -gpu=0 -distill -pretrain
+```
 
-- non-overlapping setup example
-    ```
-    python prepare.py -dataset=cifar100 -nt=5 -b=32 -edge=svgg -cloud=resnet50 -ce=30 -ee=200  -pretrain -distill
-    ```
-
-### Running Stage: run `update.py` and `execution.py`
+### Running Stage:
 
 - preparing models for each task
     ```
