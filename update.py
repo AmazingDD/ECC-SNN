@@ -27,18 +27,21 @@ def self_logit_distill(outputs, targets, temperature):
         return l_old
 
 tstart = time.time()
-logger = Logger(name="update.py", log_file="update.log", level=logging.INFO).get_logger()
+logger = Logger(
+    name="update.py", 
+    log_file=f"update_{get_local_time()}.log",  # "update.log"
+    level=logging.INFO).get_logger()
 
 parser = argparse.ArgumentParser(description='Simulate update stage for ECC-SNN')
 parser.add_argument('-ee',
                     '--edge_epochs',
-                    default=200,
+                    default=80,
                     type=int,
                     metavar='N',
                     help='number of total epochs to run edge model')
 parser.add_argument('-patience', 
                     '--lr-patience', 
-                    default=50, 
+                    default=20, 
                     type=int, 
                     required=False,
                     help='Maximum patience to wait before decreasing learning rate')
@@ -72,6 +75,10 @@ parser.add_argument('-edge',
                     default='svgg',
                     type=str,
                     help='edge model name')
+parser.add_argument('-cloud',
+                    default='vit',
+                    type=str,
+                    help='cloud model name')
 parser.add_argument('-base', 
                     '--nc-first-task', 
                     default=0, 
@@ -100,6 +107,10 @@ parser.add_argument('-temperature',
                     default=2.0, 
                     type=float, 
                     help='distillation temperature')
+parser.add_argument('-l1',
+                    type=float,
+                    default=0.5,
+                    help='logit distillation intensity')
 parser.add_argument('-pretrain', 
                     action='store_true',
                     help='using pretrained vit model for imagenet')
@@ -174,7 +185,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         total_cls_in_t = net.task_cls.sum().item()
         cloud_label_index = class_order[:total_cls_in_t]
 
-        optimizer = optim.Adam(net.parameters(), lr=1e-3, weight_decay=0.)
+        optimizer = optim.Adam(net.parameters(), lr=5e-4, weight_decay=0.)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
 
@@ -188,21 +199,24 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
             if args.fix_bn and t > 0:
                 net.freeze_bn()
             for images, targets in trn_load[t]:
+
+                # cloud infer
+                if args.pretrain:
+                    c_output, _ = c_net(
+                        nn.functional.interpolate(images.to(device), size=(224, 224), mode='bilinear', align_corners=False))
+                else:
+                    c_output, _ = c_net(images.to(device))
+                # select those labels occured in current task, and convert them to new index
+                c_output = c_output[:, cloud_label_index] 
+
+                if args.dataset in ('imagenet'):
+                    images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
+
                 outputs_old = None
                 if t > 0:
                     outputs_old, _ = net_old(images.to(device))
 
                 outputs, _ = net(images.to(device))
-
-                # cloud infer
-                if args.pretrain:
-                    c_output, _ = c_net(
-                        nn.functional.interpolate(images, size=(224, 224), mode='bilinear', align_corners=False))
-                else:
-                    c_output, _ = c_net(images)
-                # select those labels occured in current task, and convert them to new index
-                c_output = c_output[:, cloud_label_index] 
-
 
                 # L_new
                 loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
@@ -235,6 +249,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
                 total_loss, total_acc, total = 0, 0, 0
                 net.eval()
                 for images, targets in tst_load[t]:
+                    if args.dataset in ('imagenet'):
+                        images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                     outputs, _ = net(images.to(device))
                     loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
                     # calculate batch accuracy 
@@ -281,6 +297,8 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
             total = 0
             net.eval()
             for images, targets in tst_load[u]:
+                if args.dataset in ('imagenet'):
+                    images = nn.functional.interpolate(images, size=(64, 64), mode='bilinear', align_corners=False)
                 outputs, _ = net(images.to(device))
                 # task-agnostic
                 pred = torch.cat(outputs, dim=1).argmax(1)
