@@ -112,8 +112,9 @@ parser.add_argument('-tag',
 parser.add_argument('-taw', 
                     action='store_true',
                     help='Task-aware inference evaluation')
-parser.add_argument('-sensitive', 
-                    action='store_true',
+parser.add_argument('-kpi', 
+                    default=None,
+                    type=str,
                     help='Sensitive analysis for different filter')
 parser.add_argument('-thr', 
                     '--threshold', 
@@ -241,21 +242,22 @@ if args.tag:
                 entropy_record.extend([c.item() for c in entropy.view(-1)])
                 edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
 
-        import pandas as pd
-        print(pd.Series(entropy_record).describe())
+        cur_flag = np.array(entropy_record) > args.threshold
 
         cloud_acc = (np.array(label_record) == np.array(cloud_pred_record)).sum() / len(label_record)
         edge_acc_tag = (np.array(label_record) == np.array(edge_pred_record)).sum() / len(label_record)
-        cur = (np.array(entropy_record) > args.threshold).sum() / len(entropy_record)
 
+        ecc_acc_tag = ((np.array(label_record)[cur_flag] == np.array(edge_pred_record)[cur_flag]).sum() + (np.array(label_record)[~cur_flag] == np.array(cloud_pred_record)[~cur_flag]).sum()) / len(label_record)
+
+        cur = cur_flag.sum() / len(entropy_record)
         avg_energy = (cur * len(entropy_record) * ce + (1 - cur) * len(entropy_record) * ee) / len(entropy_record)
         avg_latency = (cur * len(entropy_record) * cl + (1 - cur) * len(entropy_record) * el) / len(entropy_record)
         avg_com_energy = com_e * cur
         
         logger.info(f'edge acc: {edge_acc_tag * 100:.2f}% cloud acc: {cloud_acc * 100:.2f}% for entire test set')
+        logger.info(f'ecc-snn acc: {ecc_acc_tag * 100:.2f}% for entire test set')
         logger.info(f'CUR: {cur * 100:.2f}%')
         logger.info(f'avg total energy cost: {avg_energy:.4f}mJ within {avg_com_energy:.4f}mj communication cost, latency {avg_latency:.4f}ms per input')
-
 
 if args.taw:
     logger.info('Task-Aware Simulation Results:')
@@ -333,149 +335,161 @@ if args.taw:
         logger.info(f'CUR: {cur * 100:.2f}%')
         logger.info(f'avg total energy cost: {avg_energy:.4f}mJ within {avg_com_energy:.4f}mj communication cost, latency {avg_latency:.4f}ms per input')
 
-if args.sensitive:
+if args.kpi is not None:
     logger.info('Sensitive Analysis for CUR v.s. AccI')
+    for t, (_, ncla) in enumerate(taskcla): # task 0->n
+        if t >= max_task:
+            continue
+        print('*' * 108)
+        logger.info(f'Task {t:2d}')
+        print('*' * 108)
 
-    entropy_record = []
-    max_p_record = []
-    p_margin_record = []
-    label_record = []
-    edge_pred_record = []
-    cloud_pred_record = []
-    with torch.no_grad():
-        net.eval()
-        for images, targets in test_loader:
-            new_targets = [class_order.index(c.item()) for c in targets]
-            label_record.extend(new_targets)
+        net.add_head(taskcla[t][1])
+        net.set_state_dict(
+            torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_task{t}_{args.edge}.pt', map_location='cpu'))
+        net.to(device)
 
-            edge_outputs, _ = net(images.to(device))
+        entropy_record = []
+        max_p_record = []
+        p_margin_record = []
+        label_record = []
+        edge_pred_record = []
+        cloud_pred_record = []
+        with torch.no_grad():
+            net.eval()
+            for images, targets in test_loader:
+                new_targets = [class_order.index(c.item()) for c in targets]
+                label_record.extend(new_targets)
 
-            edge_pred = torch.zeros_like(targets.to(device))
-            for m in range(len(edge_pred)):
-                if new_targets[m] < net.task_cls.sum().item():
-                    this_task = (net.task_cls.cumsum(0) <= new_targets[m]).sum()
-                    edge_pred[m] = edge_outputs[this_task][m].argmax() + net.task_offset[this_task]
+                # cloud infer
+                if args.pretrain:
+                    cloud_outputs, _ = cloud_model(
+                        nn.functional.interpolate(images.to(device), size=(224, 224), mode='bilinear', align_corners=False)
+                    )
                 else:
-                    edge_pred[m] = num_classes # unknown label
+                    cloud_outputs, _ = cloud_model(images.to(device))
+                _, predicted = torch.max(cloud_outputs.data, 1)
+                cloud_pred_record.extend([class_order.index(c.item()) for c in predicted])
 
-            probs = nn.functional.softmax(torch.cat(edge_outputs, dim=1), dim=-1) # (B, D)
-            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
+                # edge infer
+                if args.dataset in ('imagenet'):
+                    edge_outputs, _ = net(
+                        nn.functional.interpolate(images.to(device), size=(64, 64), mode='bilinear', align_corners=False)
+                    )
+                else:
+                    edge_outputs, _ = net(images.to(device))
+                edge_pred = torch.zeros_like(targets.to(device))
+                for m in range(len(edge_pred)):
+                    if new_targets[m] < net.task_cls.sum().item():
+                        this_task = (net.task_cls.cumsum(0) <= new_targets[m]).sum()
+                        edge_pred[m] = edge_outputs[this_task][m].argmax() + net.task_offset[this_task]
+                    else:
+                        edge_pred[m] = num_classes # unknown label
 
-            mp = probs.argmax(dim=-1) # (B)
-            max_p_record.extend(list(mp.view(-1)))
+                probs = nn.functional.softmax(torch.cat(edge_outputs, dim=1), dim=-1) # (B, D)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
 
-            top2_values, _ = torch.topk(probs, k=2, dim=1)
-            max_values = top2_values[:, 0]
-            second_max_values = top2_values[:, 1]
-            p_margin = max_values - second_max_values
-            p_margin_record.extend(list(p_margin.view(-1)))
+                mp = probs.argmax(dim=-1) # (B)
+                max_p_record.extend([c.item() for c in mp.view(-1)])
 
-            entropy_record.extend(list(entropy.view(-1)))
-            edge_pred_record.extend(list(edge_pred.view(-1)))
+                top2_values, _ = torch.topk(probs, k=2, dim=1)
+                max_values = top2_values[:, 0]
+                second_max_values = top2_values[:, 1]
+                p_margin = max_values - second_max_values
+                p_margin_record.extend([c.item() for c in p_margin.view(-1)])
 
-            cloud_outputs, _ = cloud_model(images.to(device))
-            _, predicted = torch.max(cloud_outputs.data, 1)
-            predicted = [class_order.index(c.item()) for c in predicted]
-            cloud_pred_record.extend(predicted)
+                entropy_record.extend([c for c in entropy.view(-1)])
+                edge_pred_record.extend([c for c in edge_pred.view(-1)])
 
-    edge_pred_record = [c.item() for c in edge_pred_record]
-    entropy_record = [c.item() for c in entropy_record]
-    label_record = [c for c in label_record]
-    cloud_pred_record = [c for c in cloud_pred_record]
-    p_margin_record = [c.item() for c in p_margin_record]
-    max_p_record = [c.item() for c in max_p_record]
+        acc_f0 = (np.array(cloud_pred_record) == np.array(label_record)).sum() / len(label_record) # only cloud acc
+        acc_f1 = (np.array(edge_pred_record) == np.array(label_record)).sum() / len(label_record) # only edge acc
 
-    cloud_acc = (np.array(label_record) == np.array(cloud_pred_record)).sum() / len(label_record)
-    edge_acc_taw = (np.array(label_record) == np.array(edge_pred_record)).sum() / len(label_record)
+        if args.kpi == 'entropy':
+            logger.info('CUR controlled by probabilities entropy:')
+            accis = []
+            curs = []
+            for threshold in range(0, 101, 10):
+                cur_index = np.array(entropy_record) >= np.percentile(entropy_record, threshold) 
+                cur = cur_index.sum() / len(entropy_record)
 
-    acc_f0 = (np.array(cloud_pred_record) == np.array(label_record)).sum() / len(label_record)
-    acc_f1 = (np.array(edge_pred_record) == np.array(label_record)).sum() / len(label_record)
+                acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
+                acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
+                acc_f01 = (acc_c + acc_e) / len(entropy_record)
+                acc_f01 = min(acc_f01, acc_f0)
 
-    # # score margin: first-second
-    # accis = []
-    # curs = []
-    # for threshold in range(0, 101, 10):
-    #     cur_index = np.array(p_margin_record) < np.percentile(p_margin_record, threshold) 
-    #     cur = cur_index.sum() / len(p_margin_record)
+                accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1) 
 
-    #     acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
-    #     acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
-    #     acc_f01 = (acc_c + acc_e) / len(p_margin_record)
+                curs.append(int(cur * 100))
+                accis.append(accI * 100)
 
-    #     accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
+            logger.info('CUR (%):', curs)
+            logger.info('Accuray Improvement (%):', accis)
 
-    #     print(f'CUR: {int(cur * 100)}%, accI: {accI * 100:.2f}%')
-    #     curs.append(int(cur * 100))
-    #     accis.append(accI * 100)
+        elif args.kpi == 'margin':
+            logger.info('CUR controlled by score margin:')
+            accis = []
+            curs = []
+            for threshold in range(0, 101, 10):
+                cur_index = np.array(p_margin_record) < np.percentile(p_margin_record, threshold) 
+                cur = cur_index.sum() / len(p_margin_record)
 
-    # print('cur:', curs)
-    # print('accI:', accis)
+                acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
+                acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
+                acc_f01 = (acc_c + acc_e) / len(p_margin_record)
+                acc_f01 = min(acc_f01, acc_f0)
 
-    # # max prob
-    # accis = []
-    # curs = []
-    # for threshold in range(0, 101, 10):
-    #     cur_index = np.array(max_p_record) < np.percentile(max_p_record, threshold) 
-    #     cur = cur_index.sum() / len(max_p_record)
+                accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
 
-    #     acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
-    #     acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
-    #     acc_f01 = (acc_c + acc_e) / len(max_p_record)
+                curs.append(int(cur * 100))
+                accis.append(accI * 100)
 
-    #     accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
+            logger.info('CUR (%):', curs)
+            logger.info('Accuray Improvement (%):', accis)
 
-    #     print(f'CUR: {int(cur * 100)}%, accI: {accI * 100:.2f}%')
-    #     curs.append(int(cur * 100))
-    #     accis.append(accI * 100)
+        elif args.kpi == 'max':
+            logger.info('CUR controlled by max probability:')
+            accis = []
+            curs = []
+            for threshold in range(0, 101, 10):
+                cur_index = np.array(max_p_record) < np.percentile(max_p_record, threshold) 
+                cur = cur_index.sum() / len(max_p_record)
 
-    # print('cur:', curs)
-    # print('accI:', accis)
+                acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
+                acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
+                acc_f01 = (acc_c + acc_e) / len(max_p_record)
+                acc_f01 = min(acc_f01, acc_f0)
 
-    # # entropy
-    # accis = []
-    # curs = []
-    # for threshold in range(0, 101, 10):
-    #     cur_index = np.array(entropy_record) >= np.percentile(entropy_record, threshold) 
-    #     cur = cur_index.sum() / len(entropy_record)
+                accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
 
-    #     acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
-    #     acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
-    #     acc_f01 = (acc_c + acc_e) / len(entropy_record)
+                curs.append(int(cur * 100))
+                accis.append(accI * 100)
 
-    #     accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1) 
+            logger.info('CUR (%):', curs)
+            logger.info('Accuray Improvement (%):', accis)
 
-    #     print(f'CUR: {int(cur * 100)}%, accI: {accI * 100:.2f}%')
+        elif args.kpi == 'random':
+            logger.info('CUR controlled by random selection:')
+            accis = []
+            curs = []
+            for threshold in range(0, 101, 10):
+                selected_index = np.random.choice(np.arange(len(entropy_record)), int(len(entropy_record) * threshold / 100), replace=False) 
+                cur = len(selected_index) / len(entropy_record)
+                cur_index = np.isin(np.arange(len(entropy_record)), selected_index)
 
-    #     curs.append(int(cur * 100))
-    #     accis.append(accI * 100)
+                acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
+                acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
+                acc_f01 = (acc_c + acc_e) / len(entropy_record)
+                acc_f01 = min(acc_f01, acc_f0)
 
-    # print('entropy')
-    # print('cur:', curs)
-    # print('accI:', accis)
+                accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
 
-    # # random
-    # accis = []
-    # curs = []
-    # for threshold in range(0, 101, 10):
-    #     selected_index = np.random.choice(np.arange(len(entropy_record)), int(len(entropy_record) * threshold / 100), replace=False) 
-    #     cur = len(selected_index) / len(entropy_record)
-    #     cur_index = np.isin(np.arange(len(entropy_record)), selected_index)
+                curs.append(int(cur * 100))
+                accis.append(accI * 100)
 
-    #     acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
-    #     acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
-    #     acc_f01 = (acc_c + acc_e) / len(entropy_record)
-
-    #     accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
-
-    #     print(f'CUR: {int(cur * 100)}%, accI: {accI * 100:.2f}%')
-
-    #     curs.append(int(cur * 100))
-    #     accis.append(accI * 100)
-
-    # print('random')
-    # print('cur:', curs)
-    # print('accI:', accis)
-    ###############################################################################################################
+            logger.info('CUR (%):', curs)
+            logger.info('Accuray Improvement (%):', accis)
+        else:
+            raise ValueError('invalid sensitive kpi setting')
 
 
     

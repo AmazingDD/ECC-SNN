@@ -109,7 +109,7 @@ parser.add_argument('-temperature',
                     help='distillation temperature')
 parser.add_argument('-l1',
                     type=float,
-                    default=0.5,
+                    default=0.,
                     help='logit distillation intensity')
 parser.add_argument('-pretrain', 
                     action='store_true',
