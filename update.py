@@ -182,10 +182,15 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
         net.add_head(taskcla[t][1]) 
         net.to(device)
 
-        total_cls_in_t = net.task_cls.sum().item()
-        cloud_label_index = class_order[:total_cls_in_t]
+        total_cls_in_t = net.task_cls.cumsum(dim=0)
+        cloud_label_index = class_order[total_cls_in_t[-2].item():total_cls_in_t[-1].item()]        
 
-        optimizer = optim.Adam(net.parameters(), lr=5e-4, weight_decay=0.)
+        if len(net.heads) > 1:
+            params = list(net.model.parameters()) + list(net.heads[-1].parameters())
+        else:
+            params = net.parameters()
+        optimizer = optim.Adam(params, lr=5e-4, weight_decay=0.)
+
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
 
@@ -221,10 +226,9 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
                 # L_new
                 loss = criterion(outputs[t], targets.to(device) - net.task_offset[t])
 
-                # logit loss, use cloud model to adjust learned label logit distribution (task-agnostic)
+                # logit loss, use cloud model to adjust learned label logit distribution
                 soft_targets = nn.functional.softmax(c_output / args.temperature, dim=1)
-                soft_logits = nn.functional.log_softmax(
-                    torch.cat(outputs, dim=1) / args.temperature, dim=1)
+                soft_logits = nn.functional.log_softmax(outputs[t] / args.temperature, dim=1)
                 loss_logit = nn.functional.kl_div(soft_logits, soft_targets, reduction='batchmean') * (args.temperature ** 2)
                 loss += args.l1 * loss_logit
                 
