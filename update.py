@@ -35,13 +35,13 @@ logger = Logger(
 parser = argparse.ArgumentParser(description='Simulate update stage for ECC-SNN')
 parser.add_argument('-ee',
                     '--edge_epochs',
-                    default=80,
+                    default=70,
                     type=int,
                     metavar='N',
                     help='number of total epochs to run edge model')
 parser.add_argument('-patience', 
                     '--lr-patience', 
-                    default=20, 
+                    default=10, 
                     type=int, 
                     required=False,
                     help='Maximum patience to wait before decreasing learning rate')
@@ -92,7 +92,7 @@ parser.add_argument('-stop',
                     help='Stop training after specified task')
 parser.add_argument('-nt', 
                     '--num-tasks', 
-                    default=10, 
+                    default=5, 
                     type=int, 
                     help='Number of tasks')
 parser.add_argument('-fix-bn', 
@@ -100,7 +100,7 @@ parser.add_argument('-fix-bn',
                     action='store_true',
                     help='Fix batch normalization after first task')
 parser.add_argument('-lamb', 
-                    default=3.0, 
+                    default=0.5, 
                     type=float, 
                     help='regularization for L_old')
 parser.add_argument('-temperature', 
@@ -141,8 +141,7 @@ else:
     raise NotImplementedError(f'Invalid dataset name: {args.dataset}')
 
 # load base edge SNN
-init_model = model_conf[args.edge](num_classes, C, H, W)
-init_model.T = args.T
+init_model = model_conf[args.edge](num_classes, C, H, W, args.T)
 seed_all(args.seed)
 net = NetHead(init_model)
 seed_all(args.seed)
@@ -189,8 +188,7 @@ for t, (_, ncla) in enumerate(taskcla): # task 0->n
             params = list(net.model.parameters()) + list(net.heads[-1].parameters())
         else:
             params = net.parameters()
-        optimizer = optim.Adam(params, lr=5e-4, weight_decay=0.)
-
+        optimizer = optim.Adam(params, lr=1e-3, weight_decay=0.)
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.edge_epochs)
         criterion = nn.CrossEntropyLoss()
 
