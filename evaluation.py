@@ -116,9 +116,6 @@ parser.add_argument('-kpi',
                     default=None,
                     type=str,
                     help='Sensitive analysis for different filter')
-parser.add_argument('-debug', 
-                    action='store_true',
-                    help='Task-aware inference evaluation')
 parser.add_argument('-thr', 
                     '--threshold', 
                     default=0.7, 
@@ -190,105 +187,6 @@ cloud_model.load_state_dict(
 cloud_model.eval()
 cloud_model.to(device)
 logger.info('cloud model loaded successfully...')
-
-if args.debug:
-    logger.info('Debug for all filters')
-    for t, (_, ncla) in enumerate(taskcla): # task 0->n
-        if t >= max_task:
-            continue
-        print('*' * 108)
-        logger.info(f'Task {t:2d}')
-        print('*' * 108)
-
-        net.add_head(taskcla[t][1])
-        net.set_state_dict(
-            torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_task{t}_{args.edge}.pt', map_location='cpu'))
-        net.to(device)
-
-        entropy_record = []
-        max_p_record = []
-        p_margin_record = []
-        label_record = []
-        edge_pred_record = []
-        cloud_pred_record = []
-
-        with torch.no_grad():
-            net.eval()
-            for images, targets in test_loader:
-                new_targets = [class_order.index(c.item()) for c in targets]
-                label_record.extend(new_targets)
-
-                # cloud infer
-                if args.pretrain:
-                    cloud_outputs, _ = cloud_model(
-                        nn.functional.interpolate(images.to(device), size=(224, 224), mode='bilinear', align_corners=False)
-                    )
-                else:
-                    cloud_outputs, _ = cloud_model(images.to(device))
-                _, predicted = torch.max(cloud_outputs.data, 1)
-                cloud_pred_record.extend([class_order.index(c.item()) for c in predicted])
-
-                # edge infer
-                if args.dataset in ('imagenet'):
-                    edge_outputs, _ = net(
-                        nn.functional.interpolate(images.to(device), size=(64, 64), mode='bilinear', align_corners=False)
-                    )
-                else:
-                    edge_outputs, _ = net(images.to(device))
-                edge_pred = torch.cat(edge_outputs, dim=1).argmax(1)
-                edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
-
-                entropy, mp, sm = None, None, None
-                for edge_output in edge_outputs:
-                    probs = nn.functional.softmax(edge_output, dim=-1)
-                    # entropy
-                    tmp = -torch.sum(probs * torch.log(probs), dim=-1) / math.log(probs.shape[1]) # (B)
-                    if entropy is None:
-                        entropy = tmp.unsqueeze(0)
-                    else:
-                        entropy = torch.cat([entropy, tmp.unsqueeze(0)], dim=0)
-
-                    # max prob
-                    tmp, _ = probs.max(dim=-1) # (B)
-                    if mp is None:
-                        mp = tmp.unsqueeze(0)
-                    else:
-                        mp = torch.cat([mp, tmp.unsqueeze(0)], dim=0)
-
-                    # score margin
-                    top2_values, _ = torch.topk(probs, k=2, dim=1)
-                    max_values = top2_values[:, 0]
-                    second_max_values = top2_values[:, 1]
-                    tmp = max_values - second_max_values
-                    if sm is None:
-                        sm = tmp.unsqueeze(0)
-                    else:
-                        sm = torch.cat([sm, tmp.unsqueeze(0)], dim=0)
-
-                entropy, _ = torch.min(entropy, dim=0)
-                entropy_record.extend([c.item() for c in entropy.view(-1)])
-
-                mp, _ = torch.max(mp, dim=0) # (B)
-                max_p_record.extend([c.item() for c in mp.view(-1)])
-
-                sm, _ = torch.max(sm, dim=0) # (B)
-                p_margin_record.extend([c.item() for c in sm.view(-1)])    
-        
-        logger.info('entropy')
-        logger.info(np.percentile(entropy_record, q=75))
-        cur_flag = np.array(entropy_record) > args.threshold
-        logger.info(f'CUR: {cur_flag.sum() / len(entropy_record) * 100:.2f}%')
-
-        logger.info('max probability')
-        logger.info(np.percentile(max_p_record, q=25))
-        cur_flag = np.array(max_p_record) < args.threshold
-        logger.info(f'CUR: {cur_flag.sum() / len(max_p_record) * 100:.2f}%')
-
-        logger.info('score margin')
-        logger.info(np.percentile(p_margin_record, q=25))
-        cur_flag = np.array(p_margin_record) < args.threshold
-        logger.info(f'CUR: {cur_flag.sum() / len(p_margin_record) * 100:.2f}%')
-
 
 if args.tag:
     logger.info('Task-Agnostic Simulation Results:')
