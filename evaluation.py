@@ -38,13 +38,13 @@ COMMU_COST = {
 
 # computational cost ()
 CLOUD_COST = {
-    'cifar100-vit': 290, # TODO
-    'imagenet-vit': 290, # TODO
+    'cifar100-vit': 300, # TODO
+    'imagenet-vit': 300, # TODO
 }
 
 EDGE_COST = {
-    'cifar100-svgg': 5, # TODO
-    'imagenet-svgg': 5, # TODO
+    'cifar100-svgg': 50, # TODO
+    'imagenet-svgg': 50, # TODO
 }
 
 logger = Logger(
@@ -59,7 +59,7 @@ parser.add_argument('-seed',
                     help='seed for initializing training.')
 parser.add_argument('-gpu',
                     '--gpu_id',
-                    default=2,
+                    default=6,
                     type=int,
                     help='GPU ID to use')
 parser.add_argument('-b',
@@ -116,6 +116,9 @@ parser.add_argument('-kpi',
                     default=None,
                     type=str,
                     help='Sensitive analysis for different filter')
+parser.add_argument('-debug', 
+                    action='store_true',
+                    help='Task-aware inference evaluation')
 parser.add_argument('-thr', 
                     '--threshold', 
                     default=0.7, 
@@ -188,6 +191,105 @@ cloud_model.eval()
 cloud_model.to(device)
 logger.info('cloud model loaded successfully...')
 
+if args.debug:
+    logger.info('Debug for all filters')
+    for t, (_, ncla) in enumerate(taskcla): # task 0->n
+        if t >= max_task:
+            continue
+        print('*' * 108)
+        logger.info(f'Task {t:2d}')
+        print('*' * 108)
+
+        net.add_head(taskcla[t][1])
+        net.set_state_dict(
+            torch.load(f'saved/{args.dataset}/base{args.nc_first_task}_task{args.num_tasks}/best_edge_task{t}_{args.edge}.pt', map_location='cpu'))
+        net.to(device)
+
+        entropy_record = []
+        max_p_record = []
+        p_margin_record = []
+        label_record = []
+        edge_pred_record = []
+        cloud_pred_record = []
+
+        with torch.no_grad():
+            net.eval()
+            for images, targets in test_loader:
+                new_targets = [class_order.index(c.item()) for c in targets]
+                label_record.extend(new_targets)
+
+                # cloud infer
+                if args.pretrain:
+                    cloud_outputs, _ = cloud_model(
+                        nn.functional.interpolate(images.to(device), size=(224, 224), mode='bilinear', align_corners=False)
+                    )
+                else:
+                    cloud_outputs, _ = cloud_model(images.to(device))
+                _, predicted = torch.max(cloud_outputs.data, 1)
+                cloud_pred_record.extend([class_order.index(c.item()) for c in predicted])
+
+                # edge infer
+                if args.dataset in ('imagenet'):
+                    edge_outputs, _ = net(
+                        nn.functional.interpolate(images.to(device), size=(64, 64), mode='bilinear', align_corners=False)
+                    )
+                else:
+                    edge_outputs, _ = net(images.to(device))
+                edge_pred = torch.cat(edge_outputs, dim=1).argmax(1)
+                edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
+
+                entropy, mp, sm = None, None, None
+                for edge_output in edge_outputs:
+                    probs = nn.functional.softmax(edge_output, dim=-1)
+                    # entropy
+                    tmp = -torch.sum(probs * torch.log(probs), dim=-1) / math.log(probs.shape[1]) # (B)
+                    if entropy is None:
+                        entropy = tmp.unsqueeze(0)
+                    else:
+                        entropy = torch.cat([entropy, tmp.unsqueeze(0)], dim=0)
+
+                    # max prob
+                    tmp, _ = probs.max(dim=-1) # (B)
+                    if mp is None:
+                        mp = tmp.unsqueeze(0)
+                    else:
+                        mp = torch.cat([mp, tmp.unsqueeze(0)], dim=0)
+
+                    # score margin
+                    top2_values, _ = torch.topk(probs, k=2, dim=1)
+                    max_values = top2_values[:, 0]
+                    second_max_values = top2_values[:, 1]
+                    tmp = max_values - second_max_values
+                    if sm is None:
+                        sm = tmp.unsqueeze(0)
+                    else:
+                        sm = torch.cat([sm, tmp.unsqueeze(0)], dim=0)
+
+                entropy, _ = torch.min(entropy, dim=0)
+                entropy_record.extend([c.item() for c in entropy.view(-1)])
+
+                mp, _ = torch.max(mp, dim=0) # (B)
+                max_p_record.extend([c.item() for c in mp.view(-1)])
+
+                sm, _ = torch.max(sm, dim=0) # (B)
+                p_margin_record.extend([c.item() for c in sm.view(-1)])    
+        
+        logger.info('entropy')
+        logger.info(np.percentile(entropy_record, q=75))
+        cur_flag = np.array(entropy_record) > args.threshold
+        logger.info(f'CUR: {cur_flag.sum() / len(entropy_record) * 100:.2f}%')
+
+        logger.info('max probability')
+        logger.info(np.percentile(max_p_record, q=25))
+        cur_flag = np.array(max_p_record) < args.threshold
+        logger.info(f'CUR: {cur_flag.sum() / len(max_p_record) * 100:.2f}%')
+
+        logger.info('score margin')
+        logger.info(np.percentile(p_margin_record, q=25))
+        cur_flag = np.array(p_margin_record) < args.threshold
+        logger.info(f'CUR: {cur_flag.sum() / len(p_margin_record) * 100:.2f}%')
+
+
 if args.tag:
     logger.info('Task-Agnostic Simulation Results:')
     for t, (_, ncla) in enumerate(taskcla): # task 0->n
@@ -235,10 +337,18 @@ if args.tag:
                     edge_outputs, _ = net(images.to(device))
                 # edge_outputs = [nn.functional.log_softmax(output, dim=1) for output in edge_outputs]
                 edge_pred = torch.cat(edge_outputs, dim=1).argmax(1)
-                # calculate entropy for edge outputs
-                probs = nn.functional.softmax(torch.cat(edge_outputs, dim=1), dim=-1)
-                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
 
+                entropy = None
+                for edge_output in edge_outputs:
+                    # calculate entropy for each edge output
+                    probs = nn.functional.softmax(edge_output, dim=-1)
+                    tmp = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
+                    if entropy is None:
+                        entropy = tmp.unsqueeze(0)
+                    else:
+                        entropy = torch.cat([entropy, tmp.unsqueeze(0)], dim=0)
+
+                entropy, _ = torch.min(entropy, dim=0)
                 entropy_record.extend([c.item() for c in entropy.view(-1)])
                 edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
 
@@ -247,7 +357,7 @@ if args.tag:
         cloud_acc = (np.array(label_record) == np.array(cloud_pred_record)).sum() / len(label_record)
         edge_acc_tag = (np.array(label_record) == np.array(edge_pred_record)).sum() / len(label_record)
 
-        ecc_acc_tag = ((np.array(label_record)[cur_flag] == np.array(edge_pred_record)[cur_flag]).sum() + (np.array(label_record)[~cur_flag] == np.array(cloud_pred_record)[~cur_flag]).sum()) / len(label_record)
+        ecc_acc_tag = ((np.array(label_record)[~cur_flag] == np.array(edge_pred_record)[~cur_flag]).sum() + (np.array(label_record)[cur_flag] == np.array(cloud_pred_record)[cur_flag]).sum()) / len(label_record)
 
         cur = cur_flag.sum() / len(entropy_record)
         avg_energy = (cur * len(entropy_record) * ce + (1 - cur) * len(entropy_record) * ee) / len(entropy_record)
@@ -311,19 +421,26 @@ if args.taw:
                     else:
                         edge_pred[m] = num_classes # unknown label for current task
 
-                # edge_outputs = [nn.functional.log_softmax(output, dim=1) for output in edge_outputs]
-                probs = nn.functional.softmax(torch.cat(edge_outputs, dim=1), dim=-1)
-                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
+                entropy = None
+                for edge_output in edge_outputs:
+                    # calculate entropy for each edge output
+                    probs = nn.functional.softmax(edge_output, dim=-1)
+                    tmp = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
+                    if entropy is None:
+                        entropy = tmp.unsqueeze(0)
+                    else:
+                        entropy = torch.cat([entropy, tmp.unsqueeze(0)], dim=0)
 
-                entropy_record.extend([c.item() for c in entropy])
-                edge_pred_record.extend([c.item() for c in edge_pred])
+                entropy, _ = torch.min(entropy, dim=0)
+                entropy_record.extend([c.item() for c in entropy.view(-1)])
+                edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
+
+        cur_flag = np.array(entropy_record) > args.threshold
 
         cloud_acc = (np.array(label_record) == np.array(cloud_pred_record)).sum() / len(label_record)
         edge_acc_taw = (np.array(label_record) == np.array(edge_pred_record)).sum() / len(label_record)
-        
-        cur_flag = np.array(entropy_record) > args.threshold
 
-        ecc_acc_taw = ((np.array(label_record)[cur_flag] == np.array(edge_pred_record)[cur_flag]).sum() + (np.array(label_record)[~cur_flag] == np.array(cloud_pred_record)[~cur_flag]).sum()) / len(label_record)
+        ecc_acc_taw = ((np.array(label_record)[~cur_flag] == np.array(edge_pred_record)[~cur_flag]).sum() + (np.array(label_record)[cur_flag] == np.array(cloud_pred_record)[cur_flag]).sum()) / len(label_record)
 
         cur = cur_flag.sum() / len(entropy_record)
         avg_energy = (cur * len(entropy_record) * ce + (1 - cur) * len(entropy_record) * ee) / len(entropy_record)
@@ -355,6 +472,7 @@ if args.kpi is not None:
         label_record = []
         edge_pred_record = []
         cloud_pred_record = []
+
         with torch.no_grad():
             net.eval()
             for images, targets in test_loader:
@@ -378,28 +496,54 @@ if args.kpi is not None:
                     )
                 else:
                     edge_outputs, _ = net(images.to(device))
-                edge_pred = torch.zeros_like(targets.to(device))
-                for m in range(len(edge_pred)):
-                    if new_targets[m] < net.task_cls.sum().item():
-                        this_task = (net.task_cls.cumsum(0) <= new_targets[m]).sum()
-                        edge_pred[m] = edge_outputs[this_task][m].argmax() + net.task_offset[this_task]
+
+                # # taw result
+                # edge_pred = torch.zeros_like(targets.to(device))
+                # for m in range(len(edge_pred)):
+                #     if new_targets[m] < net.task_cls.sum().item():
+                #         this_task = (net.task_cls.cumsum(0) <= new_targets[m]).sum()
+                #         edge_pred[m] = edge_outputs[this_task][m].argmax() + net.task_offset[this_task]
+                #     else:
+                #         edge_pred[m] = num_classes # unknown label
+                # tag result
+                edge_pred = torch.cat(edge_outputs, dim=1).argmax(1)
+                edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
+
+                entropy, mp, sm = None, None, None
+                for edge_output in edge_outputs:
+                    probs = nn.functional.softmax(edge_output, dim=-1)
+                    # entropy
+                    tmp = -torch.sum(probs * torch.log(probs), dim=-1) / math.log(probs.shape[1]) # (B)
+                    if entropy is None:
+                        entropy = tmp.unsqueeze(0)
                     else:
-                        edge_pred[m] = num_classes # unknown label
+                        entropy = torch.cat([entropy, tmp.unsqueeze(0)], dim=0)
 
-                probs = nn.functional.softmax(torch.cat(edge_outputs, dim=1), dim=-1) # (B, D)
-                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1) / math.log(probs.shape[1])
+                    # max prob
+                    tmp, _ = probs.max(dim=-1) # (B)
+                    if mp is None:
+                        mp = tmp.unsqueeze(0)
+                    else:
+                        mp = torch.cat([mp, tmp.unsqueeze(0)], dim=0)
 
-                mp = probs.argmax(dim=-1) # (B)
+                    # score margin
+                    top2_values, _ = torch.topk(probs, k=2, dim=1)
+                    max_values = top2_values[:, 0]
+                    second_max_values = top2_values[:, 1]
+                    tmp = max_values - second_max_values
+                    if sm is None:
+                        sm = tmp.unsqueeze(0)
+                    else:
+                        sm = torch.cat([sm, tmp.unsqueeze(0)], dim=0)
+
+                entropy, _ = torch.min(entropy, dim=0)
+                entropy_record.extend([c.item() for c in entropy.view(-1)])
+
+                mp, _ = torch.max(mp, dim=0) # (B)
                 max_p_record.extend([c.item() for c in mp.view(-1)])
 
-                top2_values, _ = torch.topk(probs, k=2, dim=1)
-                max_values = top2_values[:, 0]
-                second_max_values = top2_values[:, 1]
-                p_margin = max_values - second_max_values
-                p_margin_record.extend([c.item() for c in p_margin.view(-1)])
-
-                entropy_record.extend([c for c in entropy.view(-1)])
-                edge_pred_record.extend([c for c in edge_pred.view(-1)])
+                sm, _ = torch.max(sm, dim=0) # (B)
+                p_margin_record.extend([c.item() for c in sm.view(-1)])  
 
         acc_f0 = (np.array(cloud_pred_record) == np.array(label_record)).sum() / len(label_record) # only cloud acc
         acc_f1 = (np.array(edge_pred_record) == np.array(label_record)).sum() / len(label_record) # only edge acc
@@ -422,8 +566,8 @@ if args.kpi is not None:
                 curs.append(int(cur * 100))
                 accis.append(accI * 100)
 
-            logger.info('CUR (%):', curs)
-            logger.info('Accuray Improvement (%):', accis)
+            logger.info(f'CUR (%): {curs}')
+            logger.info(f'Accuray Improvement (%): {accis}')
 
         elif args.kpi == 'margin':
             logger.info('CUR controlled by score margin:')
@@ -443,8 +587,8 @@ if args.kpi is not None:
                 curs.append(int(cur * 100))
                 accis.append(accI * 100)
 
-            logger.info('CUR (%):', curs)
-            logger.info('Accuray Improvement (%):', accis)
+            logger.info(f'CUR (%): {curs}')
+            logger.info(f'Accuray Improvement (%): {accis}')
 
         elif args.kpi == 'max':
             logger.info('CUR controlled by max probability:')
@@ -464,8 +608,8 @@ if args.kpi is not None:
                 curs.append(int(cur * 100))
                 accis.append(accI * 100)
 
-            logger.info('CUR (%):', curs)
-            logger.info('Accuray Improvement (%):', accis)
+            logger.info(f'CUR (%): {curs}')
+            logger.info(f'Accuray Improvement (%): {accis}')
 
         elif args.kpi == 'random':
             logger.info('CUR controlled by random selection:')
@@ -486,10 +630,7 @@ if args.kpi is not None:
                 curs.append(int(cur * 100))
                 accis.append(accI * 100)
 
-            logger.info('CUR (%):', curs)
-            logger.info('Accuray Improvement (%):', accis)
+            logger.info(f'CUR (%): {curs}')
+            logger.info(f'Accuray Improvement (%): {accis}')
         else:
             raise ValueError('invalid sensitive kpi setting')
-
-
-    
