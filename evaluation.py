@@ -20,8 +20,8 @@ model_conf = {
 
 # edge latency on Darwin
 EDGE_LATENCY = {
-    'cifar100-svgg': 1, # TODO
-    'imagenet-svgg': 3, # TODO
+    'cifar100-svgg': 2.5, 
+    'imagenet-svgg': 11,
 } 
 
 # cloud latency (ms) = communication latency + computational latency
@@ -36,15 +36,15 @@ COMMU_COST = {
     'imagenet': 352.9,
 }
 
-# computational cost ()
+# computational cost (mj)
 CLOUD_COST = {
-    'cifar100-vit': 300, # TODO
-    'imagenet-vit': 300, # TODO
+    'cifar100-vit':  15167, 
+    'imagenet-vit':  15167, 
 }
 
 EDGE_COST = {
-    'cifar100-svgg': 50, # TODO
-    'imagenet-svgg': 50, # TODO
+    'cifar100-svgg': 0.69, 
+    'imagenet-svgg': 2.03,
 }
 
 logger = Logger(
@@ -154,10 +154,11 @@ elif args.dataset == 'imagenet':
 else:
     raise NotImplementedError(f'Invalid dataset name: {args.dataset}')
 
-# evaluate latency and energy consumption
+# latency 
 cl = CLOUD_LATENCY[f'{args.dataset}-{args.cloud}'] + EDGE_LATENCY[f'{args.dataset}-{args.edge}']
 el = EDGE_LATENCY[f'{args.dataset}-{args.edge}']
 
+# energy cost
 ce = CLOUD_COST[f'{args.dataset}-{args.cloud}'] + COMMU_COST[f'{args.dataset}'] + EDGE_COST[f'{args.dataset}-{args.edge}']
 ee = EDGE_COST[f'{args.dataset}-{args.edge}']
 com_e = COMMU_COST[f'{args.dataset}']
@@ -405,6 +406,7 @@ if args.kpi is not None:
                 #         edge_pred[m] = num_classes # unknown label
                 # tag result
                 edge_pred = torch.cat(edge_outputs, dim=1).argmax(1)
+
                 edge_pred_record.extend([c.item() for c in edge_pred.view(-1)])
 
                 entropy, mp, sm = None, None, None
@@ -457,7 +459,7 @@ if args.kpi is not None:
                 acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
                 acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
                 acc_f01 = (acc_c + acc_e) / len(entropy_record)
-                acc_f01 = min(acc_f01, acc_f0)
+                # acc_f01 = min(acc_f01, acc_f0)
 
                 accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1) 
 
@@ -478,7 +480,7 @@ if args.kpi is not None:
                 acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
                 acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
                 acc_f01 = (acc_c + acc_e) / len(p_margin_record)
-                acc_f01 = min(acc_f01, acc_f0)
+                # acc_f01 = min(acc_f01, acc_f0)
 
                 accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
 
@@ -499,7 +501,7 @@ if args.kpi is not None:
                 acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
                 acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
                 acc_f01 = (acc_c + acc_e) / len(max_p_record)
-                acc_f01 = min(acc_f01, acc_f0)
+                # acc_f01 = min(acc_f01, acc_f0)
 
                 accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
 
@@ -521,7 +523,7 @@ if args.kpi is not None:
                 acc_c = (np.array(cloud_pred_record)[cur_index] == np.array(label_record)[cur_index]).sum()
                 acc_e = (np.array(edge_pred_record)[~cur_index] == np.array(label_record)[~cur_index]).sum()
                 acc_f01 = (acc_c + acc_e) / len(entropy_record)
-                acc_f01 = min(acc_f01, acc_f0)
+                # acc_f01 = min(acc_f01, acc_f0)
 
                 accI = (acc_f01 - acc_f1) / (acc_f0 - acc_f1)
 
